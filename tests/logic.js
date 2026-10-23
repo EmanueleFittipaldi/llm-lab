@@ -116,5 +116,84 @@ for (let s = 0; s < 500; s++) { const cx = [], yy = []; for (let b = 0; b < 32; 
 const l1 = lm.evalLoss(data, 0, nT), v1 = lm.evalLoss(data, nT, data.length);
 ok('LM learns (train loss falls well below ln V after 500 steps)', l1 < 0.6 * Math.log(V), `${lmL0.toFixed(2)} -> train ${l1.toFixed(2)}, val ${v1.toFixed(2)}`);
 
+// --- module 9: inference
+const INF = run('LAB.tests.infer');
+{
+  const r0 = run('rng')(5), d = 4, n = 9, mk = (a, b) => Array.from({ length: a }, () => Array.from({ length: b }, () => r0() - 0.5));
+  const Xs = mk(n, d), Wq = mk(d, d), Wk = mk(d, d), Wv = mk(d, d);
+  const A = INF.kvDecode(Xs, Wq, Wk, Wv, false), Bc = INF.kvDecode(Xs, Wq, Wk, Wv, true);
+  let md = 0; A.outs.forEach((o, i) => o.forEach((v, j) => { md = Math.max(md, Math.abs(v - Bc.outs[i][j])); }));
+  ok('KV cache gives the same outputs as full recomputation', md < 1e-12, md.toExponential(1));
+  ok('projection counts: n(n+1)/2 without cache, n with cache', A.proj === n * (n + 1) / 2 && Bc.proj === n, `${A.proj} vs ${Bc.proj}`);
+}
+ok('Llama-2 7B KV cache = 0.5 MiB/token (fp16)', INF.kvBytesPerToken(32, 32, 128, 2) === 524288);
+ok('GQA 32->8 KV heads cuts the cache 4x', INF.kvBytesPerToken(32, 32, 128, 2) / INF.kvBytesPerToken(32, 8, 128, 2) === 4);
+{
+  const o = { N: 7e9, W: 14e9, kvSeq: 0, bw: 3.35e12, flops: 9.9e14 };
+  const s1 = INF.decodeStep({ ...o, B: 1 }), s2 = INF.decodeStep({ ...o, B: 2 }), sBig = INF.decodeStep({ ...o, B: 2000 });
+  ok('decode at batch 1 is memory-bound; throughput ~ BW / weight bytes', s1.bound === 'memoria' && close(s1.tps, 3.35e12 / 14e9, 1e-6), s1.tps.toFixed(0) + ' tok/s');
+  ok('doubling batch doubles throughput while memory-bound', close(s2.tps / s1.tps, 2, 1e-9));
+  ok('very large batch becomes compute-bound', sBig.bound === 'calcolo');
+}
+{
+  let seedS = 3; const rs = () => (seedS = (seedS * 1664525 + 1013904223) % 4294967296) / 4294967296, alpha = 0.7, k = 4; let tot = 0; const runs = 200000;
+  for (let i = 0; i < runs; i++) { let a = 0; while (a < k && rs() < alpha) a++; tot += a + 1; }
+  ok('speculative decoding expected tokens: closed form matches simulation', Math.abs(tot / runs - INF.specGain(alpha, k)) < 0.02, (tot / runs).toFixed(3) + ' vs ' + INF.specGain(alpha, k).toFixed(3));
+  ok('specGain(alpha, 1) = 1 + alpha', close(INF.specGain(0.6, 1), 1.6));
+}
+
+// --- module 10: post-training
+const PT = run('LAB.tests.post');
+{
+  const P = PT.makePairs(1, 200, 5), w0 = [0.3, -0.2], g = PT.btGrad(w0, P); let e = 0;
+  for (let k = 0; k < 2; k++) { const h = 1e-6, a = w0.slice(), b = w0.slice(); a[k] += h; b[k] -= h; e = Math.max(e, Math.abs((PT.btLoss(a, P) - PT.btLoss(b, P)) / (2 * h) - g[k])); }
+  ok('Bradley-Terry gradient matches finite differences', e < 1e-7, e.toExponential(1));
+  const th0 = PT.CANDS.map(c => c.z), gd = PT.dpoGrad(th0.map((x, i) => x + 0.1 * Math.sin(i)), P, 0.7); let e2 = 0; const thB = th0.map((x, i) => x + 0.1 * Math.sin(i));
+  for (const j of [0, 3, 7, 11]) { const h = 1e-6, a = thB.slice(), b = thB.slice(); a[j] += h; b[j] -= h; e2 = Math.max(e2, Math.abs((PT.dpoLoss(a, P, 0.7) - PT.dpoLoss(b, P, 0.7)) / (2 * h) - gd[j])); }
+  ok('DPO gradient (softmax normaliser cancels) matches finite differences', e2 < 1e-7, e2.toExponential(1));
+  ok('DPO loss at the reference policy is ln 2', close(PT.dpoLoss(th0, P, 0.5), Math.LN2, 1e-12));
+  const snaps = PT.dpoTrain(P, 0.5, 400, 0.9, 10), l0 = PT.dpoLoss(snaps[0], P, 0.5), l1 = PT.dpoLoss(snaps[snaps.length - 1], P, 0.5);
+  ok('DPO training lowers the DPO loss', l1 < l0 - 0.05, l0.toFixed(3) + ' -> ' + l1.toFixed(3));
+  const pOpt = z => { const m = Math.max(...z), e = z.map(v => Math.exp(v - m)), s = e.reduce((a, b) => a + b); return e.map(v => v / s); };
+  const r = PT.rewards(PT.fitRM(P)), pt = PT.tilt(r, 0.5), obj = p => p.reduce((s, x, i) => s + x * r[i], 0) - 0.5 * PT.klDiv(p, PT.REF);
+  ok('KL-tilted policy is normalised', close(pt.reduce((a, b) => a + b), 1, 1e-12));
+  ok('KL-tilted policy beats nearby perturbations on E[r] - beta KL', PT.CANDS.every((c, i) => { const q = pt.map((x, j) => x * (j === i ? 1.05 : 1)); const s = q.reduce((a, b) => a + b); return obj(q.map(x => x / s)) <= obj(pt) + 1e-12; }));
+  const KLs = [4, 2, 1, 0.5, 0.25, 0.1].map(b => PT.klDiv(PT.tilt(r, b), PT.REF));
+  ok('KL from reference grows as beta shrinks', KLs.every((v, i) => i === 0 || v > KLs[i - 1]), KLs.map(v => v.toFixed(2)).join(' < '));
+  const qAt = (bias, beta) => { const rr = PT.rewards(PT.fitRM(PT.makePairs(bias, 300, 11))); return PT.trueQ(PT.tilt(rr, beta)); };
+  const betas = [5, 2, 1, 0.5, 0.25, 0.1, 0.05], q0 = betas.map(b => qAt(0, b)), q2 = betas.map(b => qAt(2, b));
+  ok('no length bias: true quality improves monotonically as beta shrinks', q0.every((v, i) => i === 0 || v >= q0[i - 1] - 1e-9), q0.map(v => v.toFixed(2)).join(' '));
+  ok('strong length bias: Goodhart, true quality peaks then falls', Math.max(...q2) - q2[q2.length - 1] > 0.03 && q2.indexOf(Math.max(...q2)) < q2.length - 1, q2.map(v => v.toFixed(2)).join(' '));
+}
+
+// --- module 11: mixture of experts
+const MO = run('LAB.tests.moe'), range = n => Array.from({ length: n }, (_, i) => i);
+{
+  const D = MO.moeData(), E4 = 4;
+  // gradient of CE + lam*aux wrt W (f held constant) vs finite differences with f frozen
+  const W0 = MO.moeInit(E4), lam = 1.7, G = MO.moeGrad(W0, D.X, D.lab, 2, lam), R0 = MO.moeRoute(W0, D.X, 2), f0 = MO.moeLoad(R0, E4);
+  const frozen = W => { const R = MO.moeRoute(W, D.X, 2), P = range(E4).map(j => R.reduce((s, r) => s + r.p[j], 0) / R.length); return MO.moeCE(R, D.lab, E4) + lam * E4 * range(E4).reduce((s, i) => s + f0[i] * P[i], 0); };
+  let e = 0; for (let j = 0; j < E4; j++) for (let c = 0; c < 2; c++) { const h = 1e-6, a = W0.map(w => w.slice()), b = W0.map(w => w.slice()); a[j][c] += h; b[j][c] -= h; e = Math.max(e, Math.abs((frozen(a) - frozen(b)) / (2 * h) - G[j][c])); }
+  ok('router gradient (CE + balance loss, f frozen) matches finite differences', e < 1e-7, e.toExponential(1));
+  const un = MO.moeAux(MO.moeRoute([[0, 0], [0, 0], [0, 0], [0, 0]], D.X, 1).map((r, i) => ({ ...r, idx: [i % 4] })), 4);
+  ok('aux loss = 1 for perfectly uniform load and probabilities', close(un, 1, 1e-9), un.toFixed(6));
+  const Wa = MO.moeTrain(MO.moeInit(4), D.X, D.lab, 1, 0, 300), Ra = MO.moeRoute(Wa, D.X, 1), fa = MO.moeLoad(Ra, 4), ceA = MO.moeCE(Ra, D.lab, 4);
+  const Wb = MO.moeTrain(MO.moeInit(4), D.X, D.lab, 1, 8, 300), Rb = MO.moeRoute(Wb, D.X, 1), fb = MO.moeLoad(Rb, 4), ceB = MO.moeCE(Rb, D.lab, 4);
+  ok('lam = 0: router learns the task, load follows the data imbalance', ceA < 0.4 && Math.max(...fa) * 4 > 1.5, `CE ${ceA.toFixed(2)}, max load ${(Math.max(...fa) * 4).toFixed(2)}x`);
+  ok('k=1, lam = 8: load is more balanced, task loss is higher', Math.max(...fb) < Math.max(...fa) - 0.1 && ceB > ceA + 0.1, `max load ${(Math.max(...fb) * 4).toFixed(2)}x, CE ${ceB.toFixed(2)}, aux ${MO.moeAux(Rb, 4).toFixed(2)} vs ${MO.moeAux(Ra, 4).toFixed(2)}`);
+  const Rk = MO.moeRoute(Wa, D.X, 2); ok('top-k gate weights sum to 1 and indices are distinct', Rk.every(r => close(r.g[0] + r.g[1], 1, 1e-12) && r.idx[0] !== r.idx[1]));
+  const lo = MO.moeDropped(Ra, 4, 1, 1.0), hi = MO.moeDropped(Ra, 4, 1, 2.0);
+  ok('more capacity drops fewer assignments', hi.drop <= lo.drop && lo.drop > 0, `${(lo.drop * 100).toFixed(1)}% -> ${(hi.drop * 100).toFixed(1)}%`);
+}
+{
+  const mix = MO.moeParams({ d: 4096, L: 32, hid: 14336, E: 8, k: 2, heads: 32, kv: 8, V: 32000 });
+  ok('Mixtral 8x7B: ≈46.7B total, ≈12.9B active', Math.abs(mix.total / 46.7e9 - 1) < 0.01 && Math.abs(mix.active / 12.9e9 - 1) < 0.01, `${(mix.total / 1e9).toFixed(2)}B / ${(mix.active / 1e9).toFixed(2)}B`);
+  const dn = MO.moeParams({ d: 4096, L: 32, hid: 14336, E: 1, k: 1, heads: 32, kv: 8, V: 32000 });
+  ok('dense (E=1, k=1) has total = active', dn.total === dn.active);
+  let seedM = 9; const rm = () => (seedM = (seedM * 1664525 + 1013904223) % 4294967296) / 4294967296, Ee = 8, kk = 2, B = 5, runs = 40000; let touched = 0;
+  for (let i = 0; i < runs; i++) { const s = new Set(); for (let b = 0; b < B; b++) { const pool = range(Ee); for (let j = 0; j < kk; j++) s.add(pool.splice(Math.floor(rm() * pool.length), 1)[0]); } touched += s.size / Ee; }
+  ok('expected touched-expert fraction matches simulation', Math.abs(touched / runs - MO.moeTouched(Ee, kk, B)) < 0.01, (touched / runs).toFixed(3) + ' vs ' + MO.moeTouched(Ee, kk, B).toFixed(3));
+}
+
 console.log(bad ? `\n${bad} check(s) failed` : '\nall logic checks passed');
 process.exit(bad ? 1 : 0);

@@ -1976,6 +1976,583 @@ registerModule({
 });
 
 'use strict';
+/* Module 9 - inference: prefill vs decode, KV cache, memory, throughput, speculative decoding */
+
+/* One attention head generating n positions. With useCache the K/V rows are computed once and appended;
+   without it every step recomputes K and V (and Q) for the whole prefix. `proj` counts token-row projections. */
+function kvDecode(Xs, Wq, Wk, Wv, useCache) {
+  const n = Xs.length, d = Wq[0].length, outs = []; let proj = 0, Kc = [], Vc = [];
+  for (let t = 0; t < n; t++) {
+    if (useCache) {
+      const x = [Xs[t]], q = MX.mul(x, Wq)[0];
+      Kc.push(MX.mul(x, Wk)[0]); Vc.push(MX.mul(x, Wv)[0]); proj += 1;
+      const a = softmax(Kc.map(k => dot(q, k) / Math.sqrt(d)));
+      outs.push(range(d).map(j => sum(a.map((w, i) => w * Vc[i][j]))));
+    } else {
+      const r = attention(Xs.slice(0, t + 1), Wq, Wk, Wv, true); proj += t + 1;
+      outs.push(r.Z[t]);
+    }
+  }
+  return { outs, proj };
+}
+const kvBytesPerToken = (L, nkv, dh, bytes) => 2 * L * nkv * dh * bytes;
+/* simplified roofline for one decode step with batch B: weights read once per step, each sequence reads its own KV cache */
+function decodeStep(o) {
+  const mem = (o.W + o.B * o.kvSeq) / o.bw, cmp = o.B * 2 * o.N / o.flops, t = Math.max(mem, cmp);
+  return { t, tps: o.B / t, perUser: 1 / t, bound: mem >= cmp ? 'memoria' : 'calcolo', mem, cmp };
+}
+const specGain = (alpha, k) => alpha >= 1 ? k + 1 : (1 - Math.pow(alpha, k + 1)) / (1 - alpha);
+LAB.tests.infer = { kvDecode, kvBytesPerToken, decodeStep, specGain };
+
+registerModule({
+  id: 'm9', n: 9, title: 'KV cache e inferenza', eyebrow: 'far girare il modello davvero', heading: 'Inferenza: prefill, decode e KV cache',
+  lede: 'Generare testo è un ciclo: un token alla volta, ogni token dipende da tutti i precedenti. Senza un trucco, il costo crescerebbe col quadrato della lunghezza. Il trucco si chiama KV cache, ed è anche il motivo per cui il contesto lungo costa memoria.',
+  build(root) {
+    root.append(el('div', { html: `
+      <p>Durante il training il modello vede la sequenza intera e calcola tutte le posizioni <b>in parallelo</b> (la maschera causale impedisce di guardare avanti). In <b>inferenza</b> invece il token <var>t</var>+1 non esiste finché non hai estratto il token <var>t</var>: la generazione è sequenziale.</p>
+      <p>Guarda la formula dell'attention: la <b>query</b> della posizione nuova si confronta con le <b>key</b> di tutte le posizioni precedenti e mescola i loro <b>value</b>. Ma key e value di una posizione passata <i>non cambiano mai</i>: dipendono solo dal suo input e dai pesi. Si possono quindi calcolare una volta sola e <b>tenere in memoria</b>. Questa è la KV cache.</p>` }));
+
+    /* ---- Lab 1: prefill / decode, with and without cache ---- */
+    const TOK = ['Il', 'gatto', 'dorme', 'sul', 'divano', 'e', 'sogna', 'un', 'grande', 'pesce', 'fresco', '.'], P = 5, N = TOK.length;
+    const sStep = slider({ label: 'passo (0 = prefill)', min: 0, max: N - P, value: 2, onInput: () => { upd1(); } });
+    const cv1 = canvasEl(250), out1 = el('div', { class: 'readout' }), cvC = canvasEl(200);
+    const projAt = (cache, k) => { // cumulative token-row projections after step k
+      let s = 0; for (let j = 0; j <= k; j++) s += cache ? (j === 0 ? P : 1) : P + j; return s;
+    };
+    const c1 = setupCanvas(cv1, (ctx, w, h, t) => {
+      const k = sStep.get(), left = 96, cw = (w - left - 8) / N, rows = [['senza cache', false, 54], ['con KV cache', true, 142]];
+      rows.forEach(([name, cache, y]) => {
+        text(ctx, name, 4, y + 24, { color: t.ink, size: 12, sans: true, weight: 700 });
+        for (let i = 0; i < N; i++) {
+          const exists = i < P + k, x = left + i * cw;
+          let state = 'none'; // none | new | cached
+          if (exists) {
+            const processedNow = cache ? (k === 0 ? i < P : i === P + k - 1) : true;
+            state = processedNow ? 'new' : 'cached';
+          }
+          ctx.lineWidth = 1.5;
+          if (state === 'none') { ctx.setLineDash([3, 3]); ctx.strokeStyle = t.line; ctx.strokeRect(x + 2, y, cw - 4, 38); ctx.setLineDash([]); }
+          else if (state === 'new') { ctx.fillStyle = rgba(t.accent, 0.9); ctx.fillRect(x + 2, y, cw - 4, 38); }
+          else { ctx.fillStyle = rgba(t.teal, 0.28); ctx.fillRect(x + 2, y, cw - 4, 38); ctx.strokeStyle = t.teal; ctx.strokeRect(x + 2, y, cw - 4, 38); }
+          text(ctx, TOK[i], x + cw / 2, y + 23, { align: 'center', size: cw < 56 ? 10 : 11, color: state === 'new' ? '#fff' : (state === 'none' ? t.muted : t.ink), sans: true, weight: 600 });
+          if (i < P) text(ctx, 'prompt', x + cw / 2, y - 5, { align: 'center', size: 9, color: t.amber });
+        }
+        text(ctx, `proiezioni K,V calcolate finora: ${projAt(cache, k)}`, left, y + 58, { color: t.muted, size: 11 });
+      });
+      ctx.fillStyle = rgba(t.accent, 0.9); ctx.fillRect(left, h - 22, 10, 10); text(ctx, 'calcolato in questo passo', left + 14, h - 13, { color: t.muted, size: 10 });
+      ctx.fillStyle = rgba(t.teal, 0.4); ctx.fillRect(left + 168, h - 22, 10, 10); text(ctx, 'riletto dalla cache', left + 182, h - 13, { color: t.muted, size: 10 });
+    });
+    const cc = setupCanvas(cvC, (ctx, w, h, t) => {
+      const ns = range(100).map(i => i + 1);
+      chart(ctx, w, h, t, [
+        { xs: ns, ys: ns.map(n => n * (n + 1) / 2), color: t.rose, lw: 2.5, label: 'senza cache: n(n+1)/2' },
+        { xs: ns, ys: ns, color: t.accent, lw: 2.5, label: 'con cache: n' }], { xlabel: 'token generati n', ylabel: 'proiezioni K,V', ymin: 0, nx: 5 });
+    });
+    function upd1() {
+      const k = sStep.get(), a = projAt(false, k), b = projAt(true, k);
+      out1.innerHTML = k === 0
+        ? `<b>Prefill</b>: i ${P} token del prompt sono processati insieme in un solo passaggio parallelo (alto uso di calcolo). Per ora non c'è differenza: ${a} proiezioni.`
+        : `<b>Decode, passo ${k}</b>: senza cache ${a} proiezioni totali, con cache ${b} (${f2(a / b, 1)}× in meno). Ogni passo con cache aggiunge una sola riga a K e a V.`;
+      c1.redraw();
+    }
+    root.append(lab('Laboratorio · prefill e decode, con e senza cache', controls(sStep.el), cv1, out1,
+      el('p', { class: 'muted', html: 'Il numero di proiezioni è solo una parte del costo (c\'è anche l\'attention stessa, che resta lineare in <var>t</var> per ogni nuovo token), ma mostra bene la differenza: senza cache il lavoro totale cresce col <b>quadrato</b> dei token generati, con cache <b>linearmente</b>.' }),
+      cvC));
+    upd1();
+
+    /* ---- Lab 2: KV memory ---- */
+    const MODELS = {
+      llama2_7b: { name: 'Llama-2 7B (MHA, 32 head KV)', L: 32, nkv: 32, dh: 128, N: 6.74e9 },
+      llama3_8b: { name: 'Llama-3 8B (GQA, 8 head KV)', L: 32, nkv: 8, dh: 128, N: 8.03e9 },
+      llama3_70b: { name: 'Llama-3 70B (GQA, 8 head KV)', L: 80, nkv: 8, dh: 128, N: 70.6e9 },
+    };
+    let mk = 'llama2_7b'; const DT = { fp16: 2, int8: 1, int4: 0.5 };
+    const msel = select(Object.entries(MODELS).map(([k, m]) => [k, m.name]), mk, v => { mk = v; upd2(); }, 'modello');
+    const dsel = select([['fp16', 'KV in fp16 (2 byte)'], ['int8', 'KV in int8 (1 byte)'], ['int4', 'KV in 4 bit (0,5 byte)']], 'fp16', () => upd2(), 'precisione KV');
+    const sCtx = slider({ label: 'contesto (token)', min: 10, max: 20, step: 0.5, value: 15, fmt: v => human(Math.pow(2, v)).replace(' ', '') , onInput: () => upd2() });
+    const sB = slider({ label: 'sequenze in parallelo', min: 1, max: 64, value: 1, onInput: () => upd2() });
+    const cv2 = canvasEl(250), out2 = el('div', { class: 'readout' });
+    const gb = b => b / 1e9;
+    const c2 = setupCanvas(cv2, (ctx, w, h, t) => {
+      const B = sB.get(), by = DT[dsel.value], xs = range(40).map(i => Math.pow(2, 10 + i * 0.25)), cols = [t.rose, t.accent, t.teal];
+      const series = Object.values(MODELS).map((m, i) => ({ xs, ys: xs.map(x => gb(kvBytesPerToken(m.L, m.nkv, m.dh, by) * x * B)), color: cols[i], lw: 2.5, label: m.name.split(' (')[0] + (m.nkv === 32 ? ' (MHA)' : ' (GQA)') }));
+      series.push({ xs: [xs[0], xs[xs.length - 1]], ys: [80, 80], color: t.amber, dash: [6, 4], lw: 1.8, label: '80 GB (una GPU)' });
+      chart(ctx, w, h, t, series, { xlabel: 'token di contesto', ylabel: 'KV cache (GB)', ymin: 0, ymax: 160, xmin: 0, nx: 4, xfmt: v => human(v).replace(' ', '') });
+    });
+    function upd2() {
+      const m = MODELS[mk], by = DT[dsel.value], ctxN = Math.pow(2, sCtx.get()), B = sB.get(), per = kvBytesPerToken(m.L, m.nkv, m.dh, by), tot = per * ctxN * B;
+      const wts = m.N * 2;
+      out2.innerHTML = `per token: <b>${f2(per / 1024, 0)} KiB</b> (2 · ${m.L} layer · ${m.nkv} head KV · ${m.dh} dim · ${by} byte) · totale a ${human(ctxN)} token × ${B}: <b>${f2(gb(tot), 1)} GB</b> · pesi del modello in fp16: ${f2(gb(wts), 1)} GB → la cache pesa il <b>${f2(tot / wts * 100, 0)}%</b> dei pesi`;
+      c2.redraw();
+    }
+    root.append(lab('Laboratorio · quanta memoria occupa la KV cache', controls(msel, dsel), controls(sCtx.el, sB.el), cv2, out2,
+      el('p', { class: 'muted', html: 'Le curve usano precisione e numero di sequenze scelti sopra. Con 32 head KV (multi-head attention classica) un contesto di 128k token per una sola sequenza supera da solo una GPU da 80 GB. Per questo i modelli moderni usano <b>GQA</b> (Grouped-Query Attention): molte head di query condividono poche head di key/value, e la cache si riduce di 4× (qui 32→8).' })));
+    upd2();
+
+    /* ---- Lab 3: decode throughput ---- */
+    const HW = { h100: { name: 'GPU datacenter (≈3,3 TB/s, ≈1000 TFLOPS)', bw: 3.35e12, fl: 9.9e14 }, rtx: { name: 'GPU consumer (≈1 TB/s, ≈80 TFLOPS)', bw: 1.0e12, fl: 8e13 }, lap: { name: 'Laptop (≈0,15 TB/s, ≈10 TFLOPS)', bw: 1.5e11, fl: 1e13 } };
+    let hk = 'h100';
+    const hsel = select(Object.entries(HW).map(([k, v]) => [k, v.name]), hk, v => { hk = v; upd3(); }, 'hardware (ordini di grandezza)');
+    const sKV = slider({ label: 'contesto per sequenza', min: 10, max: 17, step: 0.5, value: 12, fmt: v => human(Math.pow(2, v)).replace(' ', ''), onInput: () => upd3() });
+    const cv3 = canvasEl(250), out3 = el('div', { class: 'readout' });
+    const stepO = B => { const m = MODELS[mk], hw = HW[hk]; return decodeStep({ B, N: m.N, W: m.N * 2, kvSeq: kvBytesPerToken(m.L, m.nkv, m.dh, 2) * Math.pow(2, sKV.get()), bw: hw.bw, flops: hw.fl }); };
+    const c3 = setupCanvas(cv3, (ctx, w, h, t) => {
+      const Bs = range(256).map(i => i + 1), r = Bs.map(stepO);
+      const c = chart(ctx, w, h, t, [
+        { xs: Bs, ys: r.map(x => x.tps), color: t.accent, lw: 2.5, label: 'token/s totali (somma su tutte le sequenze)' }
+      ], { xlabel: 'sequenze in parallelo (batch)', ylabel: 'token/s', ymin: 0, nx: 4 });
+      const ridge = Bs.findIndex(b => stepO(b).bound === 'calcolo');
+      if (ridge > 0) { ctx.strokeStyle = t.rose; ctx.setLineDash([4, 4]); ctx.beginPath(); ctx.moveTo(c.X(Bs[ridge]), c.y1); ctx.lineTo(c.X(Bs[ridge]), c.y0); ctx.stroke(); ctx.setLineDash([]); text(ctx, 'da qui limitati dal calcolo', c.X(Bs[ridge]) + 5, c.y0 - 8, { color: t.rose, size: 10 }); }
+    });
+    function upd3() {
+      const one = stepO(1), r64 = stepO(64);
+      out3.innerHTML = `batch 1: <b>${f2(one.tps, 0)} token/s</b> (limite: <b>${one.bound}</b>; leggere tutti i pesi richiede ${f2(one.mem * 1000, 1)} ms, il calcolo solo ${f2(one.cmp * 1000, 3)} ms) · batch 64: <b>${f2(r64.tps, 0)} token/s totali</b>, ${f2(r64.perUser, 1)} token/s a utente`;
+      c3.redraw();
+    }
+    root.append(lab('Laboratorio · perché il decode è limitato dalla memoria', controls(hsel, sKV.el), cv3, out3,
+      el('p', { class: 'muted', html: 'Modello semplificato: il tempo di un passo è il massimo tra (byte da leggere ÷ banda) e (FLOP ÷ potenza di calcolo). Usa il modello scelto sopra con pesi in fp16 e ignora overhead, comunicazione tra GPU e kernel non ottimali. Le cifre hardware sono <b>ordini di grandezza</b> da specifiche pubbliche, non misure.' })));
+    upd3();
+
+    /* ---- Lab 4: speculative decoding ---- */
+    const sA = slider({ label: 'tasso di accettazione α', min: 0.2, max: 0.95, step: 0.01, value: 0.8, fmt: v => v.toFixed(2), onInput: () => upd4() });
+    const sKd = slider({ label: 'token proposti k', min: 1, max: 12, value: 4, onInput: () => upd4() });
+    const sC = slider({ label: 'costo draft / target', min: 0.01, max: 0.3, step: 0.01, value: 0.05, fmt: v => v.toFixed(2), onInput: () => upd4() });
+    const cv4 = canvasEl(220), out4 = el('div', { class: 'readout' });
+    const c4 = setupCanvas(cv4, (ctx, w, h, t) => {
+      const a = sA.get(), cst = sC.get(), ks = range(12).map(i => i + 1), g = ks.map(k => specGain(a, k) / (1 + k * cst));
+      const c = chart(ctx, w, h, t, [{ xs: ks, ys: g, color: t.accent, lw: 2.5, dots: true, label: 'speedup atteso' }, { xs: [1, 12], ys: [1, 1], color: t.muted, dash: [4, 4], lw: 1.5 }], { xlabel: 'token proposti k', ylabel: 'speedup ×', ymin: 0, nx: 11 });
+      ctx.strokeStyle = t.rose; ctx.setLineDash([4, 4]); ctx.beginPath(); ctx.moveTo(c.X(sKd.get()), c.y1); ctx.lineTo(c.X(sKd.get()), c.y0); ctx.stroke(); ctx.setLineDash([]);
+    });
+    function upd4() {
+      const a = sA.get(), k = sKd.get(), cst = sC.get(), e = specGain(a, k);
+      out4.innerHTML = `token attesi per ogni passo del modello grande: <b>${f2(e, 2)}</b> · speedup atteso: <b>${f2(e / (1 + k * cst), 2)}×</b>`;
+      c4.redraw();
+    }
+    root.append(lab('Laboratorio · speculative decoding', controls(sA.el, sKd.el, sC.el), cv4, out4,
+      el('p', { class: 'muted', html: 'Un modello piccolo ("draft") propone <var>k</var> token; il modello grande li verifica <b>tutti insieme in un solo passaggio</b> (come un prefill) e ne accetta un prefisso. Con la regola di accettazione/rifiuto corretta la distribuzione dei token prodotti è <b>esattamente</b> quella del modello grande. Dopo un certo <var>k</var> conviene smettere di proporre: più token proposti significa più probabilità che uno venga rifiutato e butti via il resto.' })));
+    upd4();
+
+    root.append(el('h2', { text: 'I punti da portarsi via' }));
+    root.append(el('ul', { class: 'prose', html: `
+      <li><b>Prefill</b>: processa tutto il prompt in parallelo; è <i>compute-bound</i> (molto calcolo per byte letto). Determina il "time to first token".</li>
+      <li><b>Decode</b>: un token per passo; a ogni passo bisogna leggere tutti i pesi dalla memoria per fare pochissimo calcolo, quindi è <i>memory-bound</i>. Determina i token/s percepiti.</li>
+      <li><b>Batching</b>: servire più utenti insieme ammortizza la lettura dei pesi, finché non si diventa compute-bound (o la KV cache riempie la memoria).</li>
+      <li><b>KV cache</b>: toglie il lavoro ridondante ma costa memoria proporzionale a contesto × batch. Tecniche per ridurla: GQA/MQA, quantizzazione della cache, finestre scorrevoli, paging (PagedAttention).</li>
+      <li><b>Speculative decoding</b>: usa un modello piccolo per proporre e uno grande per verificare, per guadagnare velocità senza cambiare l'output.</li>` }));
+
+    root.append(details('math', 'La matematica: costo, memoria e roofline', 'formule', `
+      <p><b>Equivalenza.</b> Per la posizione <var>t</var>, l'uscita dell'attention è</p>
+      <span class="eq"><var>o</var><sub>t</sub> = Σ<sub>i≤t</sub> softmax<sub>i</sub>(<var>q</var><sub>t</sub>·<var>k</var><sub>i</sub> / √<var>d</var>) <var>v</var><sub>i</sub>, &nbsp; <var>k</var><sub>i</sub> = <var>x</var><sub>i</sub><var>W</var><sub>K</sub>, <var>v</var><sub>i</sub> = <var>x</var><sub>i</sub><var>W</var><sub>V</sub></span>
+      <p>Poiché <var>k</var><sub>i</sub> e <var>v</var><sub>i</sub> non dipendono da <var>t</var>, ricalcolarli o rileggerli dalla cache dà lo stesso risultato (nel laboratorio questo è verificato numericamente fino all'errore di arrotondamento).</p>
+      <p><b>Costo delle proiezioni.</b> Senza cache, generare <var>n</var> token richiede Σ<sub>t=1..n</sub> <var>t</var> = <var>n</var>(<var>n</var>+1)/2 proiezioni di riga, cioè O(<var>n</var><sup>2</sup>); con cache <var>n</var>.</p>
+      <p><b>Memoria.</b> Per token si salvano <var>K</var> e <var>V</var> in ogni layer:</p>
+      <span class="eq">byte/token = 2 · <var>L</var> · <var>n</var><sub>kv</sub> · <var>d</var><sub>head</sub> · <var>b</var></span>
+      <p>Esempio Llama-2 7B in fp16: 2·32·32·128·2 = 524 288 byte = 0,5 MiB per token, quindi 4096 token ≈ 2 GiB per sequenza.</p>
+      <p><b>Roofline semplificata.</b> Un passo di decode con batch <var>B</var> impiega</p>
+      <span class="eq"><var>t</var><sub>step</sub> = max( ${frac('<var>W</var> + <var>B</var>·<var>S</var><sub>KV</sub>', 'BW')} , ${frac('2<var>N</var><var>B</var>', 'FLOPS')} )</span>
+      <p>dove <var>W</var> sono i byte dei pesi, <var>S</var><sub>KV</sub> i byte di cache per sequenza, <var>N</var> i parametri (ogni parametro fa circa 2 FLOP per token). Il batch critico oltre cui si è compute-bound è <var>B</var>* ≈ <var>W</var>·FLOPS / (2<var>N</var>·BW) = (byte per parametro)·FLOPS/(2·BW), cioè l'<i>intensità aritmetica</i> della macchina.</p>
+      <p><b>Speculative decoding.</b> Se ogni token proposto è accettato con probabilità <var>α</var> (indipendente) e se ne propongono <var>k</var>, il numero atteso di token ottenuti per passo del modello grande è</p>
+      <span class="eq"><var>E</var> = Σ<sub>j=0..k</sub> <var>α</var><sup>j</sup> = ${frac('1 − <var>α</var><sup>k+1</sup>', '1 − <var>α</var>')}</span>
+      <p>(il +1 è il token che il modello grande produce comunque in caso di rifiuto o dopo l'ultimo accettato). Con costo del draft <var>c</var> (relativo al target) lo speedup è <var>E</var>/(1 + <var>k c</var>). L'indipendenza di <var>α</var> è un'ipotesi: in pratica l'accettazione dipende dal contesto.</p>`));
+    root.append(el('h2', { text: 'Verifica rapida' }));
+    root.append(quiz([
+      { q: 'Perché con la KV cache non si salvano anche le query?', opts: ['Sono troppo grandi', 'La query di una posizione passata non serve mai più: serve solo quella del token nuovo', 'Le query cambiano a ogni passo'], ans: 1, why: 'Ogni passo calcola l\'uscita solo per la posizione nuova, che usa la sua query contro key e value di tutti i precedenti. Le query vecchie non vengono più usate.' },
+      { q: 'Perché il decode di un singolo utente è tipicamente memory-bound?', opts: ['Perché la softmax è lenta', 'Perché per ogni token bisogna leggere tutti i pesi dalla memoria e farci pochissimi calcoli', 'Perché i token sono pochi'], ans: 1, why: 'Con batch 1 si fanno circa 2 FLOP per parametro letto: l\'intensità aritmetica è bassissima rispetto a quella che la GPU potrebbe sostenere.' },
+      { q: 'Cosa riduce la GQA?', opts: ['Il numero di layer', 'La dimensione della KV cache, condividendo key/value tra gruppi di head di query', 'Il vocabolario'], ans: 1, why: 'Meno head KV significa meno byte per token in cache, a parità di head di query.' },
+      { q: 'Il speculative decoding cambia la distribuzione dell\'output?', opts: ['Sì, è un\'approssimazione', 'No, con la regola di accettazione corretta è esatta', 'Solo a temperatura 0'], ans: 1, why: 'I token proposti vengono accettati con una probabilità che corregge la differenza tra draft e target; in caso di rifiuto si ricampiona dalla distribuzione residua.' },
+    ]));
+  },
+});
+
+'use strict';
+/* Module 10 - post-training: SFT loss masking, reward model (Bradley-Terry), KL-regularised policy, DPO */
+const sigmoid = x => 1 / (1 + Math.exp(-x));
+/* 12 toy candidate answers to one prompt. Hand-defined features: q = true quality, len = length (0..1), refLogit = base-model preference */
+const CANDS = [
+  { n: 'sbagliata, secca', q: 0.20, len: 0.10, z: 1.2 }, { n: 'vaga, breve', q: 0.35, len: 0.20, z: 1.0 },
+  { n: 'ok, breve', q: 0.60, len: 0.30, z: 1.4 }, { n: 'corretta, concisa', q: 0.75, len: 0.35, z: 1.5 },
+  { n: 'ottima, media', q: 0.90, len: 0.50, z: 0.8 }, { n: 'ottima, dettagliata', q: 0.85, len: 0.70, z: 0.5 },
+  { n: 'buona, lunga', q: 0.70, len: 0.60, z: 0.9 }, { n: 'prolissa', q: 0.50, len: 0.80, z: 0.4 },
+  { n: 'molto prolissa', q: 0.45, len: 0.95, z: 0.2 }, { n: 'divagante', q: 0.30, len: 0.90, z: 0.3 },
+  { n: 'riempitivo enorme', q: 0.55, len: 1.00, z: 0.1 }, { n: 'fuori tema, media', q: 0.15, len: 0.50, z: 0.7 },
+];
+const REF = softmax(CANDS.map(c => c.z));
+/* labelers prefer a over b with probability sigmoid(4 (u_a - u_b)), u = q + bias * len: annotators like long answers */
+function makePairs(bias, N, seed) {
+  const r = rng(seed), out = [];
+  while (out.length < N) {
+    const i = Math.floor(r() * CANDS.length), j = Math.floor(r() * CANDS.length); if (i === j) continue;
+    const ui = CANDS[i].q + bias * CANDS[i].len, uj = CANDS[j].q + bias * CANDS[j].len;
+    out.push(r() < sigmoid(4 * (ui - uj)) ? [i, j] : [j, i]); // [winner, loser]
+  }
+  return out;
+}
+/* reward model r(y) = w . (q_hat, len): here the "features" are given; in reality they are learned from text */
+const feat = c => [c.q, c.len];
+function btLoss(w, P) { return P.reduce((s, [a, b]) => { const m = dot(w, feat(CANDS[a])) - dot(w, feat(CANDS[b])); return s - Math.log(sigmoid(m)); }, 0) / P.length; }
+function btGrad(w, P) {
+  const g = [0, 0];
+  P.forEach(([a, b]) => { const fa = feat(CANDS[a]), fb = feat(CANDS[b]), m = dot(w, fa) - dot(w, fb), c = -sigmoid(-m); g[0] += c * (fa[0] - fb[0]); g[1] += c * (fa[1] - fb[1]); });
+  return g.map(x => x / P.length);
+}
+function fitRM(P, steps = 800, lr = 0.5) { let w = [0, 0]; for (let s = 0; s < steps; s++) { const g = btGrad(w, P); w = [w[0] - lr * g[0], w[1] - lr * g[1]]; } return w; }
+const rewards = w => CANDS.map(c => dot(w, feat(c)));
+const klDiv = (p, q) => sum(p.map((x, i) => x > 0 ? x * Math.log(x / q[i]) : 0));
+/* closed-form optimum of  max E_pi[r] - beta KL(pi || ref):  pi* ∝ ref · exp(r / beta) */
+const tilt = (r, beta) => softmax(CANDS.map((c, i) => c.z + r[i] / beta));
+const trueQ = p => sum(p.map((x, i) => x * CANDS[i].q));
+/* DPO on free logits theta (tabular policy): loss = -log sigmoid(beta [(log pi_w - log ref_w) - (log pi_l - log ref_l)]) */
+function dpoLoss(th, P, beta) {
+  const lp = softmax(th).map(Math.log), lr = REF.map(Math.log);
+  return P.reduce((s, [a, b]) => s - Math.log(sigmoid(beta * ((lp[a] - lr[a]) - (lp[b] - lr[b])))), 0) / P.length;
+}
+function dpoGrad(th, P, beta) { // the softmax normaliser cancels in the difference, so d loss / d theta_j = -beta sigmoid(-m) (1[j=w] - 1[j=l])
+  const lp = softmax(th).map(Math.log), lr = REF.map(Math.log), g = new Array(th.length).fill(0);
+  P.forEach(([a, b]) => { const m = beta * ((lp[a] - lr[a]) - (lp[b] - lr[b])), c = -sigmoid(-m) * beta; g[a] += c; g[b] -= c; });
+  return g.map(x => x / P.length);
+}
+function dpoTrain(P, beta, steps, lr = 0.9, every = 10) {
+  let th = CANDS.map(c => c.z); const snaps = [th.slice()];
+  for (let s = 1; s <= steps; s++) { const g = dpoGrad(th, P, beta); th = th.map((t, i) => t - lr * g[i]); if (s % every === 0) snaps.push(th.slice()); }
+  return snaps;
+}
+LAB.tests.post = { CANDS, REF, makePairs, btLoss, btGrad, fitRM, rewards, klDiv, tilt, trueQ, dpoLoss, dpoGrad, dpoTrain, sigmoid };
+
+registerModule({
+  id: 'm10', n: 10, title: 'SFT, RLHF e DPO', eyebrow: 'dopo il pre-training', heading: 'Da modello di testo a assistente',
+  lede: 'Dopo il pre-training il modello sa continuare un testo, non sa ancora "rispondere bene". Il post-training lo plasma in tre mosse: imitare esempi buoni (SFT), imparare cosa preferiscono le persone (reward model), ottimizzare verso quelle preferenze senza allontanarsi troppo dal modello di partenza (RLHF o DPO).',
+  build(root) {
+    root.append(el('div', { html: `
+      <p><b>1. SFT</b> (<i>supervised fine-tuning</i>): si continua l'addestramento con la stessa cross-entropy del modulo 8, ma su conversazioni scritte o selezionate da persone.</p>
+      <p><b>2. Preferenze</b>: per un prompt si generano più risposte e una persona (o un modello) dice quale è migliore. Si ottengono coppie <i>(vincitrice, perdente)</i>.</p>
+      <p><b>3. Ottimizzazione sulle preferenze</b>: con <b>RLHF</b> si addestra un <i>reward model</i> sulle coppie e poi si ottimizza la policy con reinforcement learning (tipicamente PPO), penalizzando la distanza dal modello di partenza. Con <b>DPO</b> si salta il reward model e si ottimizza direttamente sulle coppie.</p>` }));
+
+    /* ---- Lab A: SFT loss mask ---- */
+    const CHAT = [['sys', 'Sei'], ['sys', 'un'], ['sys', 'assistente'], ['sys', 'utile.'], ['usr', 'Qual'], ['usr', 'è'], ['usr', 'la'], ['usr', 'capitale'], ['usr', "d'Italia?"], ['ast', 'La'], ['ast', 'capitale'], ['ast', "d'Italia"], ['ast', 'è'], ['ast', 'Roma.'], ['ast', '<fine>']];
+    let masked = true; const chips = el('div', { class: 'chips' }), out1 = el('div', { class: 'readout' });
+    const role = { sys: ['sistema', 'c2'], usr: ['utente', 'c1'], ast: ['assistente', 'c0'] };
+    function drawChat() {
+      chips.innerHTML = '';
+      CHAT.forEach(([r, w], i) => {
+        const inLoss = !masked || r === 'ast';
+        chips.append(el('span', { class: 'chip ' + role[r][1], style: `opacity:${inLoss ? 1 : 0.38};${inLoss ? 'font-weight:700' : 'text-decoration:line-through'}`, title: role[r][0] + (inLoss ? ' · nella loss' : ' · escluso dalla loss'), text: w }));
+      });
+      const n = CHAT.filter(([r]) => !masked || r === 'ast').length;
+      out1.innerHTML = `token che contribuiscono alla loss: <b>${n}</b> su ${CHAT.length} · loss = −(1/${n}) Σ log p(token | precedenti)${masked ? ' sulla sola risposta' : ' su tutto, compreso il prompt'}`;
+    }
+    root.append(lab('Laboratorio · SFT: su quali token si calcola la loss', controls(checkbox('maschera sistema e utente (loss solo sulla risposta)', true, v => { masked = v; drawChat(); })), chips, out1,
+      el('p', { class: 'muted', html: 'La legenda: <span class="chip c2">sistema</span> <span class="chip c1">utente</span> <span class="chip c0">assistente</span>. Il modello vede sempre tutto il contesto, ma si addestra a <i>produrre</i> solo la parte dell\'assistente. Imparare a riprodurre il prompt dell\'utente non serve (e può insegnare cose sbagliate). Il token finale segnala quando fermarsi.' })));
+    drawChat();
+
+    /* ---- Lab B: reward model + KL-regularised optimisation ---- */
+    const sBias = slider({ label: 'preferenza dei labeler per risposte lunghe', min: 0, max: 3, step: 0.25, value: 2, fmt: v => v.toFixed(2), onInput: () => refit() });
+    const sN = slider({ label: 'coppie di preferenza', min: 40, max: 600, step: 20, value: 300, onInput: () => refit() });
+    const sBeta = slider({ label: 'log₁₀ β (forza della penalità KL)', min: -1.5, max: 0.7, step: 0.05, value: 0.0, fmt: v => 'β = ' + Math.pow(10, v).toFixed(2), onInput: () => upd() });
+    const cvP = canvasEl(300), cvB = canvasEl(230), out2 = el('div', { class: 'readout' }); let RM = null;
+    const cP = setupCanvas(cvP, (ctx, w, h, t) => {
+      if (!RM) return;
+      const p = tilt(RM.r, Math.pow(10, sBeta.get())), n = CANDS.length, left = 40, bot = 92, top = 20, bw = (w - left - 8) / n, mx = Math.max(0.05, ...p, ...REF) * 1.15, Y = v => h - bot - v / mx * (h - bot - top);
+      for (let i = 0; i <= 4; i++) { const v = mx * i / 4; ctx.strokeStyle = rgba(t.line, 0.7); ctx.beginPath(); ctx.moveTo(left, Y(v)); ctx.lineTo(w - 6, Y(v)); ctx.stroke(); text(ctx, f2(v, 2), left - 5, Y(v) + 4, { align: 'right', color: t.muted, size: 10 }); }
+      CANDS.forEach((c, i) => {
+        const x = left + i * bw + bw * 0.12, ww = bw * 0.76;
+        ctx.fillStyle = rgba(t.muted, 0.35); ctx.fillRect(x, Y(REF[i]), ww / 2, h - bot - Y(REF[i]));
+        ctx.fillStyle = t.accent; ctx.fillRect(x + ww / 2, Y(p[i]), ww / 2, h - bot - Y(p[i]));
+        // true quality marker
+        ctx.fillStyle = t.teal; ctx.beginPath(); ctx.arc(x + ww / 2, h - bot + 8, 3 + c.q * 7, 0, 7); ctx.fill();
+        ctx.save(); ctx.translate(x + ww / 2, h - bot + 24); ctx.rotate(-0.8); text(ctx, c.n, 0, 0, { align: 'right', color: t.ink, size: 10, sans: true, weight: 600 }); ctx.restore();
+      });
+      const lg = [['modello di partenza', rgba(t.muted, 0.6)], ['policy ottimizzata', t.accent], ['qualità vera (cerchio più grande = migliore)', t.teal]];
+      let lx = left; lg.forEach(([s, c]) => { ctx.fillStyle = c; ctx.fillRect(lx, 4, 10, 10); text(ctx, s, lx + 14, 13, { color: t.muted, size: 10 }); lx += 28 + s.length * 6; });
+    });
+    const cB = setupCanvas(cvB, (ctx, w, h, t) => {
+      if (!RM) return;
+      const lbs = range(61).map(i => -1.5 + i * (2.2 / 60)), rs = RM.r, rmin = Math.min(...rs), rmax = Math.max(...rs);
+      const ps = lbs.map(l => tilt(rs, Math.pow(10, l))), xs = lbs;
+      const c = chart(ctx, w, h, t, [
+        { xs, ys: ps.map(p => (sum(p.map((x, i) => x * rs[i])) - rmin) / (rmax - rmin)), color: t.amber, lw: 2.5, label: 'reward del modello di reward (0–1)' },
+        { xs, ys: ps.map(trueQ), color: t.teal, lw: 2.5, label: 'qualità vera attesa' },
+        { xs, ys: ps.map(p => klDiv(p, REF) / 3.5), color: t.rose, lw: 1.8, dash: [5, 4], label: 'KL dal modello di partenza (÷3,5)' }], { xlabel: 'log₁₀ β  (a sinistra: ottimizzazione più aggressiva)', ymin: 0, ymax: 1.05, nx: 4, xfmt: v => v.toFixed(1) });
+      ctx.strokeStyle = t.ink; ctx.setLineDash([3, 4]); ctx.beginPath(); ctx.moveTo(c.X(sBeta.get()), c.y1); ctx.lineTo(c.X(sBeta.get()), c.y0); ctx.stroke(); ctx.setLineDash([]);
+    });
+    function refit() {
+      const P = makePairs(sBias.get(), sN.get(), 11), w = fitRM(P), r = rewards(w);
+      RM = { P, w, r, acc: P.filter(([a, b]) => r[a] > r[b]).length / P.length }; upd();
+    }
+    function upd() {
+      if (!RM) return;
+      const beta = Math.pow(10, sBeta.get()), p = tilt(RM.r, beta);
+      out2.innerHTML = `reward model appreso: r = <b>${f2(RM.w[0], 2)}</b>·qualità + <b>${f2(RM.w[1], 2)}</b>·lunghezza (accuratezza sulle coppie: ${f2(RM.acc * 100, 0)}%) · qualità vera attesa: <b>${f2(trueQ(REF), 2)}</b> → <b>${f2(trueQ(p), 2)}</b> · KL = <b>${f2(klDiv(p, REF), 2)}</b> nat`;
+      cP.redraw(); cB.redraw();
+    }
+    root.append(lab('Laboratorio · reward model e ottimizzazione con penalità KL (reward hacking)',
+      el('p', { html: 'Dodici risposte candidate a uno stesso prompt, con qualità e lunghezza <b>definite a mano</b> (un giocattolo, non un vero modello). I labeler scelgono la risposta migliore con rumore, ma sono più indulgenti verso risposte lunghe. Il reward model vede solo le coppie scelte e ne impara due pesi. Poi si trova la policy che massimizza il reward appreso restando vicina al modello di partenza.' }),
+      controls(sBias.el, sN.el), controls(sBeta.el), cvP, out2, cvB,
+      el('p', { class: 'muted', html: 'Senza preferenza per la lunghezza, ridurre β migliora quasi sempre la qualità vera. Con una preferenza forte il reward model impara che "lungo = buono": a β piccolo la policy va dove il <i>reward</i> è alto anche se la qualità vera no (legge di Goodhart). Il controllo del KL (β grande) non elimina il problema, lo limita.' })));
+    refit();
+
+    /* ---- Lab C: DPO ---- */
+    const sBd = slider({ label: 'β di DPO', min: 0.05, max: 2, step: 0.05, value: 0.5, fmt: v => v.toFixed(2), onInput: () => dpoUpd(true) });
+    const sSt = slider({ label: 'passi di ottimizzazione', min: 0, max: 200, step: 1, value: 40, fmt: v => String(v * 10), onInput: () => dpoUpd(false) });
+    const cvD = canvasEl(260), cvL = canvasEl(260), out3 = el('div', { class: 'readout' }); let snaps = null;
+    const cD = setupCanvas(cvD, (ctx, w, h, t) => {
+      if (!snaps || !RM) return;
+      const th = snaps[Math.min(sSt.get(), snaps.length - 1)], p = softmax(th), n = CANDS.length, left = 40, bot = 92, top = 20, bw = (w - left - 8) / n, mx = Math.max(0.05, ...p, ...REF) * 1.15, Y = v => h - bot - v / mx * (h - bot - top);
+      for (let i = 0; i <= 4; i++) { const v = mx * i / 4; ctx.strokeStyle = rgba(t.line, 0.7); ctx.beginPath(); ctx.moveTo(left, Y(v)); ctx.lineTo(w - 6, Y(v)); ctx.stroke(); text(ctx, f2(v, 2), left - 5, Y(v) + 4, { align: 'right', color: t.muted, size: 10 }); }
+      CANDS.forEach((c, i) => {
+        const x = left + i * bw + bw * 0.12, ww = bw * 0.76;
+        ctx.fillStyle = rgba(t.muted, 0.35); ctx.fillRect(x, Y(REF[i]), ww / 2, h - bot - Y(REF[i]));
+        ctx.fillStyle = t.accent; ctx.fillRect(x + ww / 2, Y(p[i]), ww / 2, h - bot - Y(p[i]));
+        ctx.save(); ctx.translate(x + ww / 2, h - bot + 12); ctx.rotate(-0.8); text(ctx, c.n, 0, 0, { align: 'right', color: t.ink, size: 10, sans: true, weight: 600 }); ctx.restore();
+      });
+      text(ctx, 'grigio: modello di partenza · blu: policy dopo DPO sulle stesse coppie del laboratorio precedente', left, 12, { color: t.muted, size: 10 });
+    });
+    const cL = setupCanvas(cvL, (ctx, w, h, t) => {
+      const beta = sBd.get(), N = 56, g = [];
+      const lo = -6, hi = 6, M = range(N).map(i => range(N).map(j => { const dl = lo + (hi - lo) * (i + 0.5) / N, dw = lo + (hi - lo) * (j + 0.5) / N; return -Math.log(sigmoid(beta * (dw - dl))); }));
+      const side = Math.min(w - 90, h - 40), x0 = 56, y0 = 8, cs = side / N;
+      let vmax = 0; M.forEach(r => r.forEach(v => { if (v > vmax) vmax = v; }));
+      for (let i = 0; i < N; i++) for (let j = 0; j < N; j++) { ctx.fillStyle = rgba(t.accent, Math.min(1, M[i][j] / vmax) * 0.95); ctx.fillRect(x0 + j * cs, y0 + (N - 1 - i) * cs, cs + 0.5, cs + 0.5); }
+      ctx.strokeStyle = t.rose; ctx.lineWidth = 1.5; ctx.beginPath(); ctx.moveTo(x0, y0 + side); ctx.lineTo(x0 + side, y0); ctx.stroke();
+      text(ctx, 'Δ vincente = log π(y⁺)/π_ref(y⁺)  →', x0, y0 + side + 20, { color: t.muted, size: 11 });
+      ctx.save(); ctx.translate(14, y0 + side); ctx.rotate(-Math.PI / 2); text(ctx, 'Δ perdente = log π(y⁻)/π_ref(y⁻)  →', 0, 0, { color: t.muted, size: 11 }); ctx.restore();
+      text(ctx, 'retta rosa: margine 0 (loss = ln 2)', x0 + side + 8, y0 + 14, { color: t.rose, size: 10 });
+      text(ctx, 'loss alta: in alto a sinistra', x0 + side + 8, y0 + 30, { color: t.muted, size: 10 }); text(ctx, 'loss bassa: in basso a destra', x0 + side + 8, y0 + 44, { color: t.muted, size: 10 });
+    });
+    function dpoUpd(recompute) {
+      if (!RM) return;
+      if (recompute || !snaps) snaps = dpoTrain(RM.P, sBd.get(), 2000, 0.9, 10);
+      const th = snaps[Math.min(sSt.get(), snaps.length - 1)], p = softmax(th);
+      out3.innerHTML = `dopo <b>${sSt.get() * 10}</b> passi: qualità vera attesa <b>${f2(trueQ(p), 2)}</b> (partenza ${f2(trueQ(REF), 2)}) · KL dal partenza <b>${f2(klDiv(p, REF), 2)}</b> nat · loss DPO sulle coppie <b>${f2(dpoLoss(th, RM.P, sBd.get()), 3)}</b> (a θ₀: ${f2(Math.LN2, 3)})`;
+      cD.redraw(); cL.redraw();
+    }
+    root.append(lab('Laboratorio · DPO: ottimizzare direttamente sulle coppie',
+      el('p', { html: 'Qui non c\'è reward model: i logit della policy sono parametri liberi (tabellari) e la loss DPO li sposta in modo che la risposta vincente guadagni probabilità <i>rispetto al modello di partenza</i> più della perdente. Le coppie sono le stesse del laboratorio precedente (stessa preferenza per la lunghezza).' }),
+      controls(sBd.el, sSt.el), cvD, out3, cvL,
+      el('p', { class: 'muted', html: 'Nella mappa conta solo il <b>margine</b> Δ vincente − Δ perdente: il gradiente spinge a separare le due risposte, e spinge di più quando il modello sbaglia l\'ordine (margine negativo). Nota: la tabella è libera di imparare qualunque cosa sulle 12 risposte, anche il rumore; con poche coppie e molti passi può inseguire le coppie fortuite.' })));
+    dpoUpd(true);
+
+    root.append(el('h2', { text: 'Che cosa abbiamo visto' }));
+    root.append(el('ul', { class: 'prose', html: `
+      <li><b>SFT</b> insegna il formato e il tono di un assistente; la loss è mascherata sui token che il modello deve produrre.</li>
+      <li><b>Reward model</b>: un modello addestrato sulle preferenze umane. È una <i>proxy</i> imperfetta di ciò che si vuole davvero, e ottimizzare troppo una proxy la rompe.</li>
+      <li><b>Penalità KL</b>: il termine −β·KL(π‖π<sub>ref</sub>) tiene la policy vicina al modello di partenza; senza, la policy troverebbe i difetti del reward model.</li>
+      <li><b>RLHF con PPO</b> è un processo a più parti (policy, reference, reward, critic) e instabile da regolare. <b>DPO</b> sfrutta una identità che lega policy ottimale e reward (vedi sotto) per ridurlo a una loss supervisionata sulle coppie.</li>
+      <li>Varianti moderne: reward verificabili (es. test di codice o risultati matematici) al posto di preferenze umane, <i>RLAIF</i> (giudice automatico), GRPO (niente critic, vantaggio relativo dentro un gruppo di risposte).</li>` }));
+
+    root.append(details('math', 'La matematica: Bradley-Terry, KL, DPO', 'formule', `
+      <p><b>Reward model (Bradley-Terry).</b> Con <var>r</var>(<var>x</var>,<var>y</var>) punteggio scalare, la probabilità che <var>y</var><sub>w</sub> sia preferita a <var>y</var><sub>l</sub> è</p>
+      <span class="eq"><var>P</var>(<var>y</var><sub>w</sub> ≻ <var>y</var><sub>l</sub>) = σ(<var>r</var>(<var>y</var><sub>w</sub>) − <var>r</var>(<var>y</var><sub>l</sub>)), &nbsp; ℒ<sub>RM</sub> = −E log σ(<var>r</var>(<var>y</var><sub>w</sub>) − <var>r</var>(<var>y</var><sub>l</sub>))</span>
+      <p>Conta solo la <i>differenza</i> di reward: il reward è definito a meno di una costante.</p>
+      <p><b>Obiettivo RLHF.</b> Si cerca una policy <var>π</var> che massimizza il reward medio con una penalità sulla divergenza dal modello di riferimento:</p>
+      <span class="eq">max<sub>π</sub> E<sub>y∼π</sub>[<var>r</var>(<var>y</var>)] − <var>β</var> KL(<var>π</var> ‖ <var>π</var><sub>ref</sub>)</span>
+      <p>Questo problema ha soluzione esatta (è una distribuzione di Gibbs, come la softmax con temperatura del modulo 7):</p>
+      <span class="eq"><var>π</var>*(<var>y</var>) = ${frac('<var>π</var><sub>ref</sub>(<var>y</var>) exp(<var>r</var>(<var>y</var>)/<var>β</var>)', '<var>Z</var>')}</span>
+      <p>Il grafico "reward hacking" usa proprio questa formula chiusa (nel RLHF vero si approssima con PPO su un modello enorme).</p>
+      <p><b>Da qui a DPO.</b> Invertendo la formula: <var>r</var>(<var>y</var>) = <var>β</var> log(<var>π</var>*(<var>y</var>)/<var>π</var><sub>ref</sub>(<var>y</var>)) + <var>β</var> log <var>Z</var>. Sostituendo nella loss di Bradley-Terry la costante <var>Z</var> si cancella (dipende solo dal prompt) e resta</p>
+      <span class="eq">ℒ<sub>DPO</sub> = −E log σ( <var>β</var> [ log ${frac('<var>π</var>(<var>y</var><sub>w</sub>)', '<var>π</var><sub>ref</sub>(<var>y</var><sub>w</sub>)')} − log ${frac('<var>π</var>(<var>y</var><sub>l</sub>)', '<var>π</var><sub>ref</sub>(<var>y</var><sub>l</sub>)')} ] )</span>
+      <p><b>Gradiente.</b> Con margine <var>m</var> = <var>β</var>(Δ<sub>w</sub> − Δ<sub>l</sub>): ∂ℒ/∂<var>m</var> = −σ(−<var>m</var>), cioè la correzione è tanto maggiore quanto più il modello ordina male la coppia. Con policy tabellare sui logit <var>θ</var> la normalizzazione della softmax si cancella nella differenza e ∂ℒ/∂<var>θ</var><sub>j</sub> = −<var>β</var> σ(−<var>m</var>) (𝟙[<var>j</var>=w] − 𝟙[<var>j</var>=l]): il codice del laboratorio usa esattamente questa espressione (verificata con differenze finite).</p>
+      <p><b>Attenzione.</b> L'equivalenza vale per il caso ideale (policy abbastanza espressiva, ottimizzazione perfetta). In pratica DPO e RLHF danno risultati diversi, e DPO può abbassare la probabilità anche delle risposte vincenti, perché la loss guarda solo il margine.</p>`));
+    root.append(el('h2', { text: 'Verifica rapida' }));
+    root.append(quiz([
+      { q: 'Perché nella SFT si maschera il prompt dalla loss?', opts: ['Per risparmiare memoria', 'Perché il compito è imparare a produrre la risposta, non a riprodurre la domanda', 'Perché il prompt non entra nel contesto'], ans: 1, why: 'Il prompt resta nel contesto (il modello lo legge), ma la loss si calcola sui soli token che deve generare.' },
+      { q: 'A che serve il termine KL nell\'obiettivo RLHF?', opts: ['A rendere la risposta più lunga', 'A impedire che la policy si allontani troppo dal modello di partenza sfruttando i difetti del reward model', 'A velocizzare il training'], ans: 1, why: 'Senza penalità la policy cerca output che massimizzano la proxy anche se non sono buoni (reward hacking) e perde fluidità e diversità.' },
+      { q: 'Perché il reward model confronta coppie invece di dare un voto assoluto?', opts: ['Perché è più facile e più coerente per le persone dire quale tra due risposte è migliore', 'Perché i voti non sono numeri', 'Perché serve meno dati in ogni caso'], ans: 0, why: 'I giudizi relativi sono più affidabili di quelli assoluti, e Bradley-Terry li trasforma in un punteggio scalare.' },
+      { q: 'Che cosa elimina DPO rispetto a RLHF con PPO?', opts: ['Il modello di riferimento', 'Il reward model esplicito e la fase di reinforcement learning', 'Le coppie di preferenza'], ans: 1, why: 'Serve ancora il riferimento e servono ancora le coppie, ma la policy si ottimizza con una loss supervisionata diretta.' },
+    ]));
+  },
+});
+
+'use strict';
+/* Module 11 - Mixture of Experts: top-k router, load balancing, capacity, active vs total parameters */
+
+/* toy token set: 4 clusters of unequal size in a 2D "embedding" plane; cluster c has a preferred expert (c mod E) */
+const MOE_CL = [[-1.5, 1.1, 108], [1.5, 1.3, 72], [-1.1, -1.5, 36], [1.7, -1.1, 24]];
+function moeData(seed = 3) {
+  const r = rng(seed), X = [], lab = [];
+  MOE_CL.forEach(([cx, cy, n], c) => { for (let i = 0; i < n; i++) { X.push([cx + 0.5 * r.gauss(), cy + 0.5 * r.gauss()]); lab.push(c); } });
+  return { X, lab };
+}
+const moeInit = (E, seed = 5) => { const r = rng(seed); return range(E).map(() => [r.gauss() * 0.9, r.gauss() * 0.9]); };
+/* router: logits z = W x, p = softmax(z); top-k experts, gate weights = softmax restricted to the selected logits (as in Mixtral) */
+function moeRoute(W, X, k) {
+  return X.map(x => {
+    const z = W.map(w => w[0] * x[0] + w[1] * x[1]), p = softmax(z), idx = range(W.length).sort((a, b) => z[b] - z[a]).slice(0, k), g = softmax(idx.map(i => z[i]));
+    return { z, p, idx, g };
+  });
+}
+function moeLoad(R, E) { const f = new Array(E).fill(0); let tot = 0; R.forEach(r => r.idx.forEach(i => { f[i]++; tot++; })); return f.map(v => v / tot); }
+const moeMeanP = (R, E) => range(E).map(j => sum(R.map(r => r.p[j])) / R.length);
+/* Switch-style auxiliary loss: E * sum_i f_i P_i  (= 1 when load and probabilities are uniform) */
+function moeAux(R, E) { const f = moeLoad(R, E), P = moeMeanP(R, E); return E * sum(range(E).map(i => f[i] * P[i])); }
+const moeCE = (R, lab, E) => -sum(R.map((r, n) => Math.log(r.p[lab[n] % E] + 1e-12))) / R.length;
+/* gradient wrt W of  CE + lam * aux, treating the (non-differentiable) assignment fractions f as constants */
+function moeGrad(W, X, lab, k, lam) {
+  const E = W.length, R = moeRoute(W, X, k), f = moeLoad(R, E), N = X.length, G = W.map(() => [0, 0]);
+  R.forEach((r, n) => {
+    const fp = sum(range(E).map(i => f[i] * r.p[i]));
+    for (let j = 0; j < E; j++) {
+      const dz = (r.p[j] - (j === lab[n] % E ? 1 : 0)) / N + lam * (E / N) * r.p[j] * (f[j] - fp);
+      G[j][0] += dz * X[n][0]; G[j][1] += dz * X[n][1];
+    }
+  });
+  return G;
+}
+function moeTrain(W, X, lab, k, lam, steps, lr = 0.5) {
+  let V = W.map(w => w.slice());
+  for (let s = 0; s < steps; s++) { const G = moeGrad(V, X, lab, k, lam); V = V.map((w, j) => [w[0] - lr * G[j][0], w[1] - lr * G[j][1]]); }
+  return V;
+}
+/* capacity: each expert accepts at most ceil(cf * N * k / E) assignments, in token order; the rest are dropped */
+function moeDropped(R, E, k, cf) {
+  const cap = Math.ceil(cf * R.length * k / E), cnt = new Array(E).fill(0); let drop = 0;
+  R.forEach(r => r.idx.forEach(i => { if (cnt[i] >= cap) drop++; else cnt[i]++; }));
+  return { drop: drop / (R.length * k), cap };
+}
+/* SwiGLU transformer with MoE FFN: parameters stored vs parameters used per token */
+function moeParams(o) {
+  const { d, L, hid, E, k, heads, kv, V } = o, dh = d / heads, attn = 2 * d * d + 2 * d * kv * dh, expert = 3 * d * hid, router = E > 1 ? d * E : 0, norms = 2 * d;
+  const emb = 2 * V * d, shared = L * (attn + router + norms) + emb + d;
+  return { total: shared + L * E * expert, active: shared + L * k * expert, shared, expertAll: L * E * expert, expertActive: L * k * expert };
+}
+/* expected fraction of experts touched by a batch of B tokens when routing is uniform at random */
+const moeTouched = (E, k, B) => 1 - Math.pow(1 - k / E, B);
+LAB.tests.moe = { moeData, moeInit, moeRoute, moeLoad, moeAux, moeCE, moeGrad, moeTrain, moeDropped, moeParams, moeTouched };
+
+registerModule({
+  id: 'm11', n: 11, title: 'Mixture of Experts', eyebrow: 'parametri tanti, calcolo poco', heading: 'Mixture of Experts: molti blocchi, ne usi pochi',
+  lede: 'Nel Transformer denso ogni token attraversa tutti i parametri. In un modello MoE il blocco MLP viene replicato in tanti "esperti" e un piccolo router sceglie, token per token, quali usarne. Il modello ha molti parametri ma ne attiva pochi.',
+  build(root) {
+    root.append(el('div', { html: `
+      <p>Il modulo 6 diceva che l'MLP contiene la maggior parte dei parametri del blocco. Idea del MoE: sostituire <i>un</i> MLP con <var>E</var> MLP indipendenti (gli <b>esperti</b>) e aggiungere un <b>router</b>, un piccolo strato lineare che dato il vettore del token produce un punteggio per ciascun esperto. Si tengono i <var>k</var> migliori (di solito 1 o 2, in alcuni modelli di più), le loro uscite si combinano pesate dai punteggi.</p>
+      <p>Attenzione al nome: gli esperti <b>non</b> sono "esperto di matematica", "esperto di legge". La specializzazione che emerge è spesso più sottile e in parte sintattica; qui nel laboratorio la rendiamo evidente con punti in un piano per poter <i>vedere</i> come si comporta il router.</p>` }));
+
+    const DATA = moeData();
+    let E = 4, K = 1, W = moeInit(E), cf = 1.25;
+    const COLS = t => [t.accent, t.amber, t.teal, t.rose, '#8b6fb0', '#b0743b', '#4a8f8f', '#9c9c3a'];
+    const sE = slider({ label: 'esperti E', min: 2, max: 8, value: 4, onInput: v => { E = v; if (K > E) { K = E; sK.set(K); } W = moeInit(E); upd(); } });
+    const sK = slider({ label: 'esperti attivi k', min: 1, max: 4, value: 1, onInput: v => { K = Math.min(v, E); upd(); } });
+    const sL = slider({ label: 'peso loss di bilanciamento λ', min: 0, max: 16, step: 0.25, value: 0, fmt: v => v.toFixed(2), onInput: () => { } });
+    const sC = slider({ label: 'capacity factor', min: 1, max: 2, step: 0.05, value: 1.25, fmt: v => v.toFixed(2), onInput: v => { cf = v; upd(); } });
+    const cv = canvasEl(340), cvl = canvasEl(200), out = el('div', { class: 'readout' }); let hover = null;
+    const cp = setupCanvas(cv, (ctx, w, h, t) => {
+      const side = Math.min(w, h), ox = (w - side) / 2, S = side / 6, tx = x => ox + (x + 3) * S, ty = y => (3 - y) * S, cols = COLS(t);
+      const n = 36, cell = side / n;
+      for (let i = 0; i < n; i++) for (let j = 0; j < n; j++) {
+        const x = -3 + (j + 0.5) * 6 / n, y = 3 - (i + 0.5) * 6 / n, z = W.map(wj => wj[0] * x + wj[1] * y), b = z.indexOf(Math.max(...z));
+        ctx.fillStyle = rgba(cols[b], 0.13); ctx.fillRect(ox + j * cell, i * cell, cell + 0.5, cell + 0.5);
+      }
+      ctx.strokeStyle = t.line; ctx.strokeRect(ox, 0, side, side);
+      const R = moeRoute(W, DATA.X, K);
+      DATA.X.forEach((x, i) => {
+        ctx.fillStyle = cols[R[i].idx[0]]; ctx.beginPath(); ctx.arc(tx(x[0]), ty(x[1]), 3, 0, 7); ctx.fill();
+        if (K > 1) { ctx.strokeStyle = cols[R[i].idx[1]]; ctx.lineWidth = 1; ctx.beginPath(); ctx.arc(tx(x[0]), ty(x[1]), 4.8, 0, 7); ctx.stroke(); }
+      });
+      W.forEach((wj, j) => { const m = Math.hypot(wj[0], wj[1]) || 1, L = Math.min(2.4, m) * S; arrow(ctx, tx(0), ty(0), tx(0) + wj[0] / m * L, ty(0) - wj[1] / m * L, cols[j], 2.5, 8); text(ctx, 'E' + (j + 1), tx(0) + wj[0] / m * (L + 12), ty(0) - wj[1] / m * (L + 12) + 4, { align: 'center', color: cols[j], size: 12, weight: 700 }); });
+      text(ctx, 'colore del punto = esperto con punteggio più alto · anello = secondo esperto (se k ≥ 2) · frecce = vettori del router', ox + 6, h - 6, { color: t.muted, size: 10 });
+    });
+    const cl = setupCanvas(cvl, (ctx, w, h, t) => {
+      const R = moeRoute(W, DATA.X, K), f = moeLoad(R, E), P = moeMeanP(R, E), cols = COLS(t), left = 44, bot = 30, top = 22, bw = (w - left - 8) / E, mx = Math.max(0.5, ...f) * 1.1, Y = v => h - bot - v / mx * (h - bot - top);
+      for (let i = 0; i <= 4; i++) { const v = mx * i / 4; ctx.strokeStyle = rgba(t.line, 0.7); ctx.beginPath(); ctx.moveTo(left, Y(v)); ctx.lineTo(w - 6, Y(v)); ctx.stroke(); text(ctx, f2(v, 2), left - 5, Y(v) + 4, { align: 'right', color: t.muted, size: 10 }); }
+      const cap = cf / E; // capacity expressed as a fraction of all assignments
+      f.forEach((v, j) => {
+        const x = left + j * bw + bw * 0.12, ww = bw * 0.76;
+        ctx.fillStyle = cols[j]; ctx.fillRect(x, Y(v), ww / 2, h - bot - Y(v));
+        ctx.fillStyle = rgba(t.muted, 0.5); ctx.fillRect(x + ww / 2, Y(P[j]), ww / 2, h - bot - Y(P[j]));
+        text(ctx, 'E' + (j + 1), x + ww / 2, h - bot + 14, { align: 'center', color: t.ink, size: 11, weight: 700 });
+      });
+      ctx.strokeStyle = t.ink; ctx.setLineDash([5, 4]); ctx.beginPath(); ctx.moveTo(left, Y(1 / E)); ctx.lineTo(w - 6, Y(1 / E)); ctx.stroke();
+      ctx.strokeStyle = t.rose; ctx.beginPath(); ctx.moveTo(left, Y(cap)); ctx.lineTo(w - 6, Y(cap)); ctx.stroke(); ctx.setLineDash([]);
+      text(ctx, 'colorata: quota di assegnamenti fᵢ · grigia: probabilità media Pᵢ · tratteggio nero: carico ideale 1/E · rosa: capacità', left, 12, { color: t.muted, size: 10 });
+    });
+    function upd() {
+      const R = moeRoute(W, DATA.X, K), f = moeLoad(R, E), ce = moeCE(R, DATA.lab, E), aux = moeAux(R, E), dr = moeDropped(R, E, K, cf), imb = Math.max(...f) * E;
+      out.innerHTML = `loss del "compito" (cross-entropy verso l'esperto giusto per ogni cluster): <b>${f2(ce, 2)}</b> · loss di bilanciamento <b>${f2(aux, 2)}</b> (ideale = 1) · esperto più carico: <b>${f2(imb, 2)}×</b> la quota ideale · assegnamenti scartati per capacità (${dr.cap} token per esperto): <b>${f2(dr.drop * 100, 1)}%</b>`;
+      cp.redraw(); cl.redraw();
+    }
+    const train = n => { W = moeTrain(W, DATA.X, DATA.lab, K, sL.get(), n); upd(); };
+    root.append(lab('Laboratorio · il router, il carico e la loss di bilanciamento',
+      el('p', { html: 'Ogni punto è un token (240, in 4 gruppi di dimensioni diverse: 45%, 30%, 15%, 10%). Il router è una matrice <var>W</var> (un vettore per esperto): il punteggio di un token <var>x</var> per l\'esperto <var>j</var> è <var>W</var><sub>j</sub>·<var>x</var>. Nel "compito" giocattolo ogni gruppo ha un esperto giusto (gruppo 1 → E1, gruppo 2 → E2, …). Premi <b>Allena</b> per muovere i vettori del router con la discesa del gradiente.' }),
+      controls(sE.el, sK.el), controls(sL.el, sC.el),
+      controls(button('Allena 50 passi', () => train(50), 'primary'), button('Allena 300 passi', () => train(300)), button('Reinizializza router', () => { W = moeInit(E); upd(); })),
+      cv, out, cvl,
+      el('p', { class: 'muted', html: 'Con λ = 0 il router impara il compito ma eredita lo squilibrio dei dati: l\'esperto del gruppo grande è sovraccarico e, con capacity bassa, scarta token. Con <var>k</var> = 1, λ ≈ 8 e qualche centinaio di passi la loss di bilanciamento riporta i carichi vicino a 1/<var>E</var>, ma a un prezzo: parte dei token finisce a un esperto "sbagliato" e la loss del compito sale. Con λ molto alto il carico oscilla da un passo all\'altro, perché <var>f</var><sub>i</sub> è discreto e cambia a salti. Con <var>k</var> = 2 il carico è già più uniforme perché il secondo esperto distribuisce i token. Nei modelli veri si cerca il compromesso con un λ piccolo (dell\'ordine di 10<sup>-2</sup>) perché il compito è molto più ricco di questo.' })));
+    upd();
+
+    /* ---- Lab 2: parameters stored vs used ---- */
+    const PRE = {
+      mix: { name: 'Mixtral 8×7B (8 esperti, k=2)', d: 4096, L: 32, hid: 14336, E: 8, k: 2, heads: 32, kv: 8, V: 32000 },
+      dense: { name: 'Denso equivalente (1 esperto)', d: 4096, L: 32, hid: 14336, E: 1, k: 1, heads: 32, kv: 8, V: 32000 },
+      many: { name: 'Più esperti, più piccoli (64, k=6)', d: 4096, L: 32, hid: 1792, E: 64, k: 6, heads: 32, kv: 8, V: 32000 },
+    };
+    let pk = 'mix';
+    const psel = select(Object.entries(PRE).map(([k, v]) => [k, v.name]), pk, v => { pk = v; upd2(); }, 'configurazione');
+    const cv2 = canvasEl(170), out2 = el('div', { class: 'readout' });
+    const c2 = setupCanvas(cv2, (ctx, w, h, t) => {
+      const q = moeParams(PRE[pk]), mx = Math.max(...Object.values(PRE).map(o => moeParams(o).total)), left = 120, s = (w - left - 14) / mx;
+      const rows = [['parametri totali', [[q.shared, rgba(t.muted, 0.6)], [q.expertAll, t.accent]]], ['usati per token', [[q.shared, rgba(t.muted, 0.6)], [q.expertActive, t.amber]]]];
+      rows.forEach(([name, segs], i) => {
+        const y = 28 + i * 54; text(ctx, name, 6, y + 22, { color: t.ink, size: 12, sans: true, weight: 700 }); let x = left;
+        segs.forEach(([v, c]) => { ctx.fillStyle = c; ctx.fillRect(x, y, v * s, 32); x += v * s; });
+        text(ctx, human(segs.reduce((a, b) => a + b[0], 0)), x + 6, y + 21, { color: t.ink, size: 12, weight: 700 });
+      });
+      ctx.fillStyle = rgba(t.muted, 0.6); ctx.fillRect(left, h - 18, 10, 10); text(ctx, 'embedding + attention + router (sempre usati)', left + 14, h - 9, { color: t.muted, size: 10 });
+      ctx.fillStyle = t.accent; ctx.fillRect(left + 270, h - 18, 10, 10); text(ctx, 'esperti', left + 284, h - 9, { color: t.muted, size: 10 });
+    });
+    function upd2() {
+      const q = moeParams(PRE[pk]);
+      out2.innerHTML = `totali <b>${human(q.total)}</b> · attivi per token <b>${human(q.active)}</b> (${f2(q.active / q.total * 100, 0)}%) · pesi da tenere in memoria (fp16): <b>${f2(q.total * 2 / 1e9, 1)} GB</b> · calcolo per token ≈ ${f2(2 * q.active / 1e9, 1)} GFLOP`;
+      c2.redraw();
+    }
+    root.append(lab('Laboratorio · parametri totali contro parametri attivi', controls(psel), cv2, out2,
+      el('p', { class: 'muted', html: 'Conti fatti con le formule del modulo 0 (attention con GQA, MLP SwiGLU, embedding non condivisi). Il Mixtral qui è l\'architettura pubblicata; la terza configurazione è un esempio costruito per illustrare un MoE con esperti piccoli, non un modello reale.' })));
+    upd2();
+
+    /* ---- Lab 3: batching erodes the MoE advantage at decode ---- */
+    const sE3 = slider({ label: 'esperti E', min: 2, max: 128, value: 8, onInput: () => upd3() });
+    const sK3 = slider({ label: 'esperti attivi k', min: 1, max: 8, value: 2, onInput: () => upd3() });
+    const cv3 = canvasEl(220), out3 = el('div', { class: 'readout' });
+    const c3 = setupCanvas(cv3, (ctx, w, h, t) => {
+      const e = sE3.get(), k = Math.min(sK3.get(), e), Bs = range(128).map(i => i + 1);
+      chart(ctx, w, h, t, [{ xs: Bs, ys: Bs.map(b => moeTouched(e, k, b)), color: t.accent, lw: 2.5, label: 'frazione di esperti letti dalla memoria' }, { xs: [1, 128], ys: [k / e, k / e], color: t.amber, dash: [5, 4], lw: 1.8, label: 'frazione usata da un solo token (k/E)' }], { xlabel: 'token decodificati insieme (batch)', ymin: 0, ymax: 1.02, nx: 4, yfmt: v => f2(v, 1) });
+    });
+    function upd3() {
+      const e = sE3.get(), k = Math.min(sK3.get(), e);
+      out3.innerHTML = `batch 1: <b>${f2(moeTouched(e, k, 1) * 100, 0)}%</b> degli esperti · batch 8: <b>${f2(moeTouched(e, k, 8) * 100, 0)}%</b> · batch 32: <b>${f2(moeTouched(e, k, 32) * 100, 0)}%</b>`;
+      c3.redraw();
+    }
+    root.append(lab('Laboratorio · MoE e batching in inferenza', controls(sE3.el, sK3.el), cv3, out3,
+      el('p', { class: 'muted', html: 'Nel modulo 9 il decode era limitato dalla lettura dei pesi. Un MoE usa pochi esperti per token, quindi con batch 1 legge solo una piccola parte dei pesi. Ma con molti token insieme i router (supponendo scelte indipendenti e uniformi) toccano quasi tutti gli esperti: il vantaggio di velocità sparisce e restano il costo di memoria e la comunicazione tra GPU. In pratica le scelte non sono uniformi, ma il senso della curva resta.' })));
+    upd3();
+
+    root.append(el('h2', { text: 'I punti da portarsi via' }));
+    root.append(el('ul', { class: 'prose', html: `
+      <li>Un MoE <b>scollega</b> capacità (parametri totali) e costo per token (parametri attivi): più conoscenza immagazzinata a parità di calcolo.</li>
+      <li>Il prezzo è la memoria (tutti gli esperti devono stare da qualche parte), la comunicazione (i token vanno inviati alle GPU che ospitano gli esperti scelti) e l'instabilità del training.</li>
+      <li><b>Load balancing</b>: senza vincoli il router tende a favorire pochi esperti, che migliorano più in fretta e attirano ancora più token (<i>rich get richer</i>). Si aggiungono loss ausiliarie, oppure bias di bilanciamento aggiornati durante il training.</li>
+      <li><b>Capacity</b>: ogni esperto accetta un numero massimo di token per batch; l'eccesso viene scartato (passa solo per la connessione residua) o reindirizzato.</li>
+      <li>Varianti: esperti condivisi sempre attivi più esperti instradati, tanti esperti piccoli (fine-grained), routing "expert choice" (sono gli esperti a scegliere i token).</li>` }));
+
+    root.append(details('math', 'La matematica: router, gate e loss ausiliaria', 'formule', `
+      <p><b>Router e gate.</b> Con <var>x</var> ∈ ℝ<sup><var>d</var></sup> l'uscita dell'attention e <var>W</var><sub>r</sub> ∈ ℝ<sup><var>E</var>×<var>d</var></sup>: <var>z</var> = <var>W</var><sub>r</sub><var>x</var>, e sia <var>S</var> l'insieme degli indici dei <var>k</var> punteggi più alti. Nello stile di Mixtral i pesi di combinazione sono la softmax sui soli punteggi selezionati:</p>
+      <span class="eq"><var>y</var> = Σ<sub><var>i</var>∈<var>S</var></sub> <var>g</var><sub>i</sub> · <var>FFN</var><sub>i</sub>(<var>x</var>), &nbsp; <var>g</var><sub>i</sub> = ${frac('exp(<var>z</var><sub>i</sub>)', 'Σ<sub><var>j</var>∈<var>S</var></sub> exp(<var>z</var><sub>j</sub>)')}</span>
+      <p>La selezione top-<var>k</var> non è differenziabile, ma i pesi <var>g</var><sub>i</sub> sì: il router riceve gradiente attraverso di essi.</p>
+      <p><b>Loss di bilanciamento (stile Switch Transformer).</b> Su un batch di <var>N</var> token, sia <var>f</var><sub>i</sub> la frazione di assegnamenti ricevuti dall'esperto <var>i</var> (dato discreto) e <var>P</var><sub>i</sub> = (1/<var>N</var>) Σ<sub>n</sub> <var>p</var><sub>n,i</sub> la probabilità media del router per <var>i</var> (differenziabile):</p>
+      <span class="eq">ℒ<sub>aux</sub> = <var>E</var> · Σ<sub>i=1..E</sub> <var>f</var><sub>i</sub> <var>P</var><sub>i</sub></span>
+      <p>Vale 1 quando carico e probabilità sono uniformi (<var>f</var><sub>i</sub> = <var>P</var><sub>i</sub> = 1/<var>E</var>) ed è maggiore di 1 quando l'esperto più usato è anche quello con le probabilità più alte. Il gradiente rispetto ai punteggi, con <var>f</var> trattato come costante, è</p>
+      <span class="eq">${frac('∂ℒ<sub>aux</sub>', '∂<var>z</var><sub>n,j</sub>')} = ${frac('<var>E</var>', '<var>N</var>')} <var>p</var><sub>n,j</sub> ( <var>f</var><sub>j</sub> − Σ<sub>i</sub> <var>f</var><sub>i</sub> <var>p</var><sub>n,i</sub> )</span>
+      <p>cioè per un token si abbassa il punteggio degli esperti con carico superiore alla media pesata e si alza quello degli altri. Il laboratorio usa questa espressione (verificata con differenze finite).</p>
+      <p><b>Parametri.</b> Per layer: attention <var>A</var> (condivisa), router <var>d</var>·<var>E</var>, e <var>E</var> esperti da 3<var>d</var>·<var>h</var> (SwiGLU). Totali ≈ <var>L</var>(<var>A</var> + <var>E</var>·3<var>dh</var>) + embedding; attivi ≈ <var>L</var>(<var>A</var> + <var>k</var>·3<var>dh</var>) + embedding.</p>
+      <p><b>Batching.</b> Con scelte indipendenti e uniformi, la probabilità che un dato esperto non sia scelto da nessun token di un batch di <var>B</var> è (1 − <var>k</var>/<var>E</var>)<sup><var>B</var></sup>, quindi la frazione attesa di esperti letti è 1 − (1 − <var>k</var>/<var>E</var>)<sup><var>B</var></sup>.</p>`));
+    root.append(el('h2', { text: 'Verifica rapida' }));
+    root.append(quiz([
+      { q: 'Un MoE con 8 esperti e k = 2 ha, rispetto a un denso con lo stesso MLP, circa…', opts: ['8 volte i parametri totali ma gli stessi attivi per un MLP doppio', '8 volte i parametri dell\'MLP e solo 2 attivi per token', 'gli stessi parametri e il doppio di calcolo'], ans: 1, why: 'Si memorizzano 8 MLP, per ogni token se ne attraversano 2. L\'attention e gli embedding sono invece condivisi.' },
+      { q: 'Perché serve una loss di bilanciamento?', opts: ['Per rendere il router differenziabile', 'Perché il router tende a concentrare i token su pochi esperti, che così si allenano di più e attirano altri token', 'Per ridurre il vocabolario'], ans: 1, why: 'È un circolo vizioso (rich get richer): senza correttivi molti esperti restano sottoutilizzati e l\'hardware lavora in modo sbilanciato.' },
+      { q: 'Perché con batch grandi il MoE perde parte del vantaggio in decode?', opts: ['Perché i token diversi attivano esperti diversi e quasi tutti gli esperti vengono letti dalla memoria', 'Perché la softmax diventa più lenta', 'Perché k aumenta'], ans: 0, why: 'La lettura dei pesi, che domina il decode, non è più ridotta a k/E ma si avvicina all\'intero modello.' },
+    ]));
+  },
+});
+
+'use strict';
 /* App shell: builds the rail (the model stack as navigation) and shows one module at a time. */
 (function () {
   const rail = $('#rail'), stage = $('#stage'), mods = LAB.modules;
@@ -2001,7 +2578,7 @@ registerModule({
   after.forEach(m => list.append(mkNode(m)));
   rail.append(list);
   rail.append(el('div', { class: 'roadmap' }, el('b', { text: 'Prossimi moduli' }),
-    el('ul', {}, ['KV cache e inferenza', 'Fine-tuning, RLHF, DPO', 'Mixture of Experts', 'Interpretabilità', 'RAG, tool use, agenti'].map(t => el('li', { text: t })))));
+    el('ul', {}, ['Interpretabilità', 'RAG, tool use, agenti', 'Transformer vero addestrato nel browser'].map(t => el('li', { text: t })))));
   const th = el('div', { class: 'theme-row' });
   [['auto', 'Auto'], ['light', 'Chiaro'], ['dark', 'Scuro']].forEach(([v, t]) => th.append(button(t, () => {
     if (v === 'auto') document.documentElement.removeAttribute('data-theme'); else document.documentElement.setAttribute('data-theme', v);

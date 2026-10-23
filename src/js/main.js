@@ -24,7 +24,7 @@
   after.forEach(m => list.append(mkNode(m)));
   rail.append(list);
   rail.append(el('div', { class: 'roadmap' }, el('b', { text: 'Prossimi moduli' }),
-    el('ul', {}, ['KV cache e inferenza', 'Fine-tuning, RLHF, DPO', 'Mixture of Experts', 'Interpretabilità', 'RAG, tool use, agenti'].map(t => el('li', { text: t })))));
+    el('ul', {}, ['Interpretabilità', 'RAG, tool use, agenti', 'Transformer vero addestrato nel browser'].map(t => el('li', { text: t })))));
   const th = el('div', { class: 'theme-row' });
   [['auto', 'Auto'], ['light', 'Chiaro'], ['dark', 'Scuro']].forEach(([v, t]) => th.append(button(t, () => {
     if (v === 'auto') document.documentElement.removeAttribute('data-theme'); else document.documentElement.setAttribute('data-theme', v);
