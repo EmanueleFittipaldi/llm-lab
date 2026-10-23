@@ -91,19 +91,19 @@ registerModule({
     };
     let mk = 'llama2_7b'; const DT = { fp16: 2, int8: 1, int4: 0.5 };
     const msel = select(Object.entries(MODELS).map(([k, m]) => [k, m.name]), mk, v => { mk = v; upd2(); }, 'modello');
-    const dsel = select([['fp16', 'KV in fp16 (2 byte)'], ['int8', 'KV in int8 (1 byte)'], ['int4', 'KV in 4 bit (0,5 byte)']], 'fp16', () => upd2(), 'precisione KV');
+    let dtk = 'fp16'; const dsel = select([['fp16', 'KV in fp16 (2 byte)'], ['int8', 'KV in int8 (1 byte)'], ['int4', 'KV in 4 bit (0,5 byte)']], 'fp16', v => { dtk = v; upd2(); }, 'precisione KV');
     const sCtx = slider({ label: 'contesto (token)', min: 10, max: 20, step: 0.5, value: 15, fmt: v => human(Math.pow(2, v)).replace(' ', '') , onInput: () => upd2() });
     const sB = slider({ label: 'sequenze in parallelo', min: 1, max: 64, value: 1, onInput: () => upd2() });
     const cv2 = canvasEl(250), out2 = el('div', { class: 'readout' });
     const gb = b => b / 1e9;
     const c2 = setupCanvas(cv2, (ctx, w, h, t) => {
-      const B = sB.get(), by = DT[dsel.value], xs = range(40).map(i => Math.pow(2, 10 + i * 0.25)), cols = [t.rose, t.accent, t.teal];
+      const B = sB.get(), by = DT[dtk], xs = range(40).map(i => Math.pow(2, 10 + i * 0.25)), cols = [t.rose, t.accent, t.teal];
       const series = Object.values(MODELS).map((m, i) => ({ xs, ys: xs.map(x => gb(kvBytesPerToken(m.L, m.nkv, m.dh, by) * x * B)), color: cols[i], lw: 2.5, label: m.name.split(' (')[0] + (m.nkv === 32 ? ' (MHA)' : ' (GQA)') }));
       series.push({ xs: [xs[0], xs[xs.length - 1]], ys: [80, 80], color: t.amber, dash: [6, 4], lw: 1.8, label: '80 GB (una GPU)' });
       chart(ctx, w, h, t, series, { xlabel: 'token di contesto', ylabel: 'KV cache (GB)', ymin: 0, ymax: 160, xmin: 0, nx: 4, xfmt: v => human(v).replace(' ', '') });
     });
     function upd2() {
-      const m = MODELS[mk], by = DT[dsel.value], ctxN = Math.pow(2, sCtx.get()), B = sB.get(), per = kvBytesPerToken(m.L, m.nkv, m.dh, by), tot = per * ctxN * B;
+      const m = MODELS[mk], by = DT[dtk], ctxN = Math.pow(2, sCtx.get()), B = sB.get(), per = kvBytesPerToken(m.L, m.nkv, m.dh, by), tot = per * ctxN * B;
       const wts = m.N * 2;
       out2.innerHTML = `per token: <b>${f2(per / 1024, 0)} KiB</b> (2 · ${m.L} layer · ${m.nkv} head KV · ${m.dh} dim · ${by} byte) · totale a ${human(ctxN)} token × ${B}: <b>${f2(gb(tot), 1)} GB</b> · pesi del modello in fp16: ${f2(gb(wts), 1)} GB → la cache pesa il <b>${f2(tot / wts * 100, 0)}%</b> dei pesi`;
       c2.redraw();

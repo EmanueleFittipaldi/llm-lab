@@ -195,5 +195,36 @@ const MO = run('LAB.tests.moe'), range = n => Array.from({ length: n }, (_, i) =
   ok('expected touched-expert fraction matches simulation', Math.abs(touched / runs - MO.moeTouched(Ee, kk, B)) < 0.01, (touched / runs).toFixed(3) + ' vs ' + MO.moeTouched(Ee, kk, B).toFixed(3));
 }
 
+// --- module 12: scaling laws
+const SC = run('LAB.tests.scale');
+{
+  const f = SC.SCALE_FITS.rep, o = SC.SCALE_FITS.orig, C = 1e22;
+  let bestE = 0, bestL = Infinity; for (let e = 8; e <= 12; e += 0.001) { const N = Math.pow(10, e), L = SC.scLoss(N, C / 6 / N, f); if (L < bestL) { bestL = L; bestE = e; } }
+  ok('closed-form N_opt matches a brute-force search along the iso-FLOP line', Math.abs(Math.log10(SC.scNopt(C, f)) - bestE) < 0.01, `${bestE.toFixed(3)} vs ${Math.log10(SC.scNopt(C, f)).toFixed(3)}`);
+  const Nc = SC.scNopt(5.76e23, f), Dc = 5.76e23 / 6 / Nc;
+  ok('replication fit reproduces the ~70B / ~1.4T Chinchilla optimum at 5.76e23 FLOP', Math.abs(Nc / 70e9 - 1) < 0.1 && Math.abs(Dc / 1.4e12 - 1) < 0.1 && Math.abs(Dc / Nc - 20) < 3, `${(Nc / 1e9).toFixed(0)}B x ${(Dc / 1e12).toFixed(2)}T`);
+  const No = SC.scNopt(5.76e23, o), Do = 5.76e23 / 6 / No; ok('original fit implies a much higher tokens/param ratio (~59)', Do / No > 50 && Do / No < 70, (Do / No).toFixed(1));
+  ok('Chinchilla 70B/1.4T beats Gopher 280B/300B at equal compute (replica fit)', SC.scLoss(70e9, 1.4e12, f) < SC.scLoss(280e9, 300e9, f));
+  const Lt = 2.1, b0 = SC.scBestN(Lt, 0, f), bI = SC.scBestN(Lt, 1e13, f);
+  const Cs = b0.c, Nopt = SC.scNopt(Cs, f);
+  ok('with no inference, the cost-optimal N for a target loss equals the compute-optimal N', Math.abs(Math.log10(b0.N) - Math.log10(Nopt)) < 0.03, `${(b0.N / 1e9).toFixed(2)}B vs ${(Nopt / 1e9).toFixed(2)}B`);
+  ok('heavy inference shifts the optimum to a smaller model trained on more tokens', bI.N < b0.N && bI.D / bI.N > b0.D / b0.N, `${(b0.N / 1e9).toFixed(1)}B -> ${(bI.N / 1e9).toFixed(1)}B`);
+  ok('a small model has a loss floor that no data can lower', !isFinite(SC.scDforLoss(1e7, 2.1, f)) && isFinite(SC.scDforLoss(1e10, 2.1, f)));
+  ok('L(N, D(N, Lt)) = Lt', close(SC.scLoss(3e9, SC.scDforLoss(3e9, 2.2, f), f), 2.2, 1e-9));
+}
+
+// --- module 13: quantization
+const QT = run('LAB.tests.quant');
+{
+  const w = QT.quantWeights(2048, 0.02, 0, 1), q8 = QT.quantize(w, 8, 32), meanS = q8.scales.reduce((a, b) => a + b) / q8.scales.length;
+  ok('rounding error stays within half a step', w.every((v, i) => Math.abs(v - q8.deq[i]) <= q8.scales[Math.floor(i / 32)] / 2 + 1e-12));
+  ok('RMS error ≈ s/sqrt(12) (uniform rounding noise)', Math.abs(QT.quantRMSE(w, q8.deq) / (meanS / Math.sqrt(12)) - 1) < 0.06, (QT.quantRMSE(w, q8.deq) / (meanS / Math.sqrt(12))).toFixed(3));
+  const e6 = QT.quantRMSE(w, QT.quantize(w, 6, 32).deq), e7 = QT.quantRMSE(w, QT.quantize(w, 7, 32).deq);
+  ok('one bit less roughly doubles the error', e6 / e7 > 1.8 && e6 / e7 < 2.2, (e6 / e7).toFixed(2));
+  const wo = QT.quantWeights(2048, 0.02, 2, 30), eT = QT.quantRMSE(wo, QT.quantize(wo, 4, Infinity).deq), eG = QT.quantRMSE(wo, QT.quantize(wo, 4, 32).deq), eT0 = QT.quantRMSE(w, QT.quantize(w, 4, Infinity).deq);
+  ok('outliers: per-tensor scale hurts much more than per-group', eT > 3 * eG && eT > 3 * eT0, `per-tensor ${(eT / 0.02).toFixed(3)}σ vs group-32 ${(eG / 0.02).toFixed(3)}σ (no outliers: ${(eT0 / 0.02).toFixed(3)}σ)`);
+  ok('effective bits per weight include the fp16 scales', QT.quantBitsPerWeight(4, 64) === 4.25 && QT.quantBitsPerWeight(4, Infinity) === 4);
+}
+
 console.log(bad ? `\n${bad} check(s) failed` : '\nall logic checks passed');
 process.exit(bad ? 1 : 0);

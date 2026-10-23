@@ -6,6 +6,7 @@
   try { JSON.parse(localStorage.getItem('llmlab.seen') || '[]').forEach(x => seen.add(x)); } catch (e) { /* storage may be unavailable */ }
 
   const nodes = {}, pages = {};
+  const PART = { m0: 'Fondamenti', m7: 'Output e training', m9: 'Modelli in produzione', m14: 'Capire e usare', m16: 'Capstone' };
   const mkNode = m => {
     const b = el('button', { class: 'node', type: 'button', 'data-id': m.id, onclick: () => show(m.id) },
       el('span', { class: 'idx', text: String(m.n) }), el('span', { text: m.title }), el('span', { class: 'seen' }));
@@ -18,13 +19,12 @@
   const list = el('div', { class: 'stack' });
   const first = mods.filter(m => !m.layer), inLayer = mods.filter(m => m.layer), after = mods.filter(m => !m.layer && m.n > Math.max(...inLayer.map(x => x.n)));
   const before = first.filter(m => m.n < Math.min(...inLayer.map(x => x.n)));
-  before.forEach(m => list.append(mkNode(m)));
+  const partLabel = m => PART[m.id] ? el('div', { class: 'part-label', text: PART[m.id] }) : null;
+  before.forEach(m => { const pl = partLabel(m); if (pl) list.append(pl); list.append(mkNode(m)); });
   list.append(el('div', { class: 'layers-label', text: '× N layer (ripetuto)' }));
   const lay = el('div', { class: 'layers' }); inLayer.forEach(m => lay.append(mkNode(m))); list.append(lay);
-  after.forEach(m => list.append(mkNode(m)));
+  after.forEach(m => { const pl = partLabel(m); if (pl) list.append(pl); list.append(mkNode(m)); });
   rail.append(list);
-  rail.append(el('div', { class: 'roadmap' }, el('b', { text: 'Prossimi moduli' }),
-    el('ul', {}, ['Interpretabilità', 'RAG, tool use, agenti', 'Transformer vero addestrato nel browser'].map(t => el('li', { text: t })))));
   const th = el('div', { class: 'theme-row' });
   [['auto', 'Auto'], ['light', 'Chiaro'], ['dark', 'Scuro']].forEach(([v, t]) => th.append(button(t, () => {
     if (v === 'auto') document.documentElement.removeAttribute('data-theme'); else document.documentElement.setAttribute('data-theme', v);

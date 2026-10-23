@@ -44,6 +44,7 @@ for (const id of mods) {
   poke(page, id);
   pumpFrames(80);
   env.ro.forEach(cb => { try { cb([]); } catch (e) { fail('redraw2 ' + id, e); } });
+  { let txt = ''; page.walk(n => { txt += ' ' + (n.textContent || '') + ' ' + (n._html || ''); }); const m = txt.match(/NaN|undefined|\[object/); if (m) fail('bad text in ' + id, 'found "' + m[0] + '" near: ' + txt.slice(Math.max(0, txt.indexOf(m[0]) - 80), txt.indexOf(m[0]) + 40)); }
   console.log('visited', id);
 }
 // theme change redraw

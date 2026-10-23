@@ -80,6 +80,7 @@ button, input, select, textarea { font: inherit; color: inherit; }
 .node.visited .seen { opacity: 1; }
 .layers { margin: 6px 0 6px 8px; padding-left: 8px; border-left: 2px solid var(--accent); display: flex; flex-direction: column; gap: 2px; }
 .layers-label { font: 500 11px var(--mono); color: var(--accent); margin: 8px 0 -2px 10px; letter-spacing: 0.04em; }
+.part-label { font: 600 10.5px var(--display); text-transform: uppercase; letter-spacing: 0.1em; color: var(--muted); margin: 14px 0 3px 4px; }
 .roadmap { font: 500 12px/1.5 var(--mono); color: var(--muted); border-top: 1px solid var(--line); padding-top: 14px; }
 .roadmap b { display: block; font: 600 11px var(--display); text-transform: uppercase; letter-spacing: 0.09em; margin-bottom: 4px; }
 .roadmap ul { margin: 0; padding-left: 16px; }
@@ -198,7 +199,7 @@ details > summary small { font: 500 11px var(--mono); color: var(--muted); text-
     max-height: none; flex-direction: row; align-items: center; gap: 10px; overflow-x: auto; overflow-y: hidden;
     padding: 8px 0; background: var(--bg); border-bottom: 1px solid var(--line); z-index: 5;
   }
-  .brand { font-size: 20px; flex: none; } .tag, .roadmap, .layers-label, .theme-row { display: none; }
+  .brand { font-size: 20px; flex: none; } .tag, .roadmap, .layers-label, .part-label, .theme-row { display: none; }
   .stack { flex-direction: row; gap: 4px; }
   .layers { flex-direction: row; margin: 0; padding: 0 0 0 6px; border-left: 2px solid var(--accent); gap: 4px; }
   .node { padding: 6px 9px; width: auto; white-space: nowrap; }
@@ -2068,19 +2069,19 @@ registerModule({
     };
     let mk = 'llama2_7b'; const DT = { fp16: 2, int8: 1, int4: 0.5 };
     const msel = select(Object.entries(MODELS).map(([k, m]) => [k, m.name]), mk, v => { mk = v; upd2(); }, 'modello');
-    const dsel = select([['fp16', 'KV in fp16 (2 byte)'], ['int8', 'KV in int8 (1 byte)'], ['int4', 'KV in 4 bit (0,5 byte)']], 'fp16', () => upd2(), 'precisione KV');
+    let dtk = 'fp16'; const dsel = select([['fp16', 'KV in fp16 (2 byte)'], ['int8', 'KV in int8 (1 byte)'], ['int4', 'KV in 4 bit (0,5 byte)']], 'fp16', v => { dtk = v; upd2(); }, 'precisione KV');
     const sCtx = slider({ label: 'contesto (token)', min: 10, max: 20, step: 0.5, value: 15, fmt: v => human(Math.pow(2, v)).replace(' ', '') , onInput: () => upd2() });
     const sB = slider({ label: 'sequenze in parallelo', min: 1, max: 64, value: 1, onInput: () => upd2() });
     const cv2 = canvasEl(250), out2 = el('div', { class: 'readout' });
     const gb = b => b / 1e9;
     const c2 = setupCanvas(cv2, (ctx, w, h, t) => {
-      const B = sB.get(), by = DT[dsel.value], xs = range(40).map(i => Math.pow(2, 10 + i * 0.25)), cols = [t.rose, t.accent, t.teal];
+      const B = sB.get(), by = DT[dtk], xs = range(40).map(i => Math.pow(2, 10 + i * 0.25)), cols = [t.rose, t.accent, t.teal];
       const series = Object.values(MODELS).map((m, i) => ({ xs, ys: xs.map(x => gb(kvBytesPerToken(m.L, m.nkv, m.dh, by) * x * B)), color: cols[i], lw: 2.5, label: m.name.split(' (')[0] + (m.nkv === 32 ? ' (MHA)' : ' (GQA)') }));
       series.push({ xs: [xs[0], xs[xs.length - 1]], ys: [80, 80], color: t.amber, dash: [6, 4], lw: 1.8, label: '80 GB (una GPU)' });
       chart(ctx, w, h, t, series, { xlabel: 'token di contesto', ylabel: 'KV cache (GB)', ymin: 0, ymax: 160, xmin: 0, nx: 4, xfmt: v => human(v).replace(' ', '') });
     });
     function upd2() {
-      const m = MODELS[mk], by = DT[dsel.value], ctxN = Math.pow(2, sCtx.get()), B = sB.get(), per = kvBytesPerToken(m.L, m.nkv, m.dh, by), tot = per * ctxN * B;
+      const m = MODELS[mk], by = DT[dtk], ctxN = Math.pow(2, sCtx.get()), B = sB.get(), per = kvBytesPerToken(m.L, m.nkv, m.dh, by), tot = per * ctxN * B;
       const wts = m.N * 2;
       out2.innerHTML = `per token: <b>${f2(per / 1024, 0)} KiB</b> (2 · ${m.L} layer · ${m.nkv} head KV · ${m.dh} dim · ${by} byte) · totale a ${human(ctxN)} token × ${B}: <b>${f2(gb(tot), 1)} GB</b> · pesi del modello in fp16: ${f2(gb(wts), 1)} GB → la cache pesa il <b>${f2(tot / wts * 100, 0)}%</b> dei pesi`;
       c2.redraw();
@@ -2553,6 +2554,238 @@ registerModule({
 });
 
 'use strict';
+/* Module 12 - scaling laws: L(N, D) = E + A/N^a + B/D^b, compute-optimal allocation, overtraining for cheap inference */
+const SCALE_FITS = {
+  rep: { name: 'replica (Besiroglu et al. 2024)', E: 1.8172, A: 482.01, B: 2085.43, a: 0.3478, b: 0.3658 },
+  orig: { name: 'originale (Hoffmann et al. 2022)', E: 1.6934, A: 406.4, B: 410.7, a: 0.3392, b: 0.2849 },
+};
+const scLoss = (N, D, f) => f.E + f.A / Math.pow(N, f.a) + f.B / Math.pow(D, f.b);
+/* minimise L(N, C/6N) over N: setting the derivative to zero gives N^(a+b) = (a A / b B) (C/6)^b */
+const scNopt = (C, f) => Math.pow(f.a * f.A / (f.b * f.B), 1 / (f.a + f.b)) * Math.pow(C / 6, f.b / (f.a + f.b));
+/* tokens needed for a model of N parameters to reach loss Lt (Infinity if Lt is below what N can ever reach) */
+function scDforLoss(N, Lt, f) { const r = Lt - f.E - f.A / Math.pow(N, f.a); return r <= 0 ? Infinity : Math.pow(f.B / r, 1 / f.b); }
+const scCost = (N, D, I) => 6 * N * D + 2 * N * I; // training FLOPs + serving I tokens
+function scBestN(Lt, I, f) {
+  let best = null;
+  for (let e = 7; e <= 13; e += 0.02) { const N = Math.pow(10, e), D = scDforLoss(N, Lt, f); if (!isFinite(D)) continue; const c = scCost(N, D, I); if (!best || c < best.c) best = { N, D, c, e }; }
+  return best;
+}
+LAB.tests.scale = { SCALE_FITS, scLoss, scNopt, scDforLoss, scCost, scBestN };
+
+registerModule({
+  id: 'm12', n: 12, title: 'Scaling laws', eyebrow: 'quanto grande, quanto a lungo', heading: 'Scaling laws: come si spende un budget di calcolo',
+  lede: 'La loss di un modello non è casuale: segue leggi di potenza regolari in parametri, dati e calcolo. Questo permette di decidere prima di spendere milioni, quanto grande fare il modello e per quanti token addestrarlo.',
+  build(root) {
+    root.append(el('div', { html: `
+      <p>Empiricamente la loss sul test di un modello ben addestrato si comporta come</p>
+      <span class="eq"><var>L</var>(<var>N</var>, <var>D</var>) = <var>E</var> + ${frac('<var>A</var>', '<var>N</var><sup>α</sup>')} + ${frac('<var>B</var>', '<var>D</var><sup>β</sup>')}</span>
+      <p>con <var>N</var> parametri e <var>D</var> token di training. <var>E</var> è la loss "irriducibile" (l'entropia del testo stesso), gli altri due termini dicono quanto manca per avere troppo pochi parametri o troppi pochi dati. Il costo di training è circa <b>6<var>ND</var> FLOP</b>: 2 FLOP per parametro nel passaggio in avanti e 4 nell'indietro, per ogni token.</p>
+      <p>Le costanti vengono da un <b>fit</b> su molte esecuzioni di training: non sono leggi di natura, e il laboratorio mostra due fit diversi per la stessa formula, per ricordarlo.</p>` }));
+
+    let fk = 'rep';
+    const fit = () => SCALE_FITS[fk];
+    const fsel = select(Object.entries(SCALE_FITS).map(([k, v]) => [k, v.name]), fk, v => { fk = v; upd(); }, 'costanti');
+    const sC = slider({ label: 'budget di calcolo log₁₀ C (FLOP)', min: 19, max: 26, step: 0.1, value: 23.76, fmt: v => '10^' + v.toFixed(1), onInput: () => upd() });
+    const cv = canvasEl(330), cvU = canvasEl(220), out = el('div', { class: 'readout' });
+    const XN = [7.5, 12.5], YD = [8.5, 14.5];
+    const c1 = setupCanvas(cv, (ctx, w, h, t) => {
+      const f = fit(), left = 50, right = 10, top = 10, bot = 38, pw = w - left - right, ph = h - top - bot, nx = 60, ny = 40;
+      const X = v => left + (v - XN[0]) / (XN[1] - XN[0]) * pw, Y = v => top + (1 - (v - YD[0]) / (YD[1] - YD[0])) * ph;
+      let lo = Infinity, hi = -Infinity; const Lm = [];
+      for (let i = 0; i < ny; i++) { Lm.push([]); for (let j = 0; j < nx; j++) { const l = scLoss(Math.pow(10, XN[0] + (j + 0.5) / nx * (XN[1] - XN[0])), Math.pow(10, YD[0] + (1 - (i + 0.5) / ny) * (YD[1] - YD[0])), f); Lm[i].push(l); lo = Math.min(lo, l); hi = Math.max(hi, l); } }
+      for (let i = 0; i < ny; i++) for (let j = 0; j < nx; j++) { const u = 1 - (Lm[i][j] - lo) / (hi - lo); ctx.fillStyle = rgba(t.accent, 0.08 + 0.85 * Math.pow(u, 1.5)); ctx.fillRect(left + j * pw / nx, top + i * ph / ny, pw / nx + 0.5, ph / ny + 0.5); }
+      ctx.strokeStyle = t.muted; ctx.strokeRect(left, top, pw, ph);
+      for (let e = 8; e <= 12; e++) text(ctx, '10^' + e, X(e), top + ph + 14, { align: 'center', color: t.muted, size: 10 });
+      for (let e = 9; e <= 14; e++) text(ctx, '10^' + e, left - 5, Y(e) + 4, { align: 'right', color: t.muted, size: 10 });
+      text(ctx, 'parametri N', left + pw / 2, h - 5, { align: 'center', color: t.muted, size: 11 });
+      ctx.save(); ctx.translate(11, top + ph / 2); ctx.rotate(-Math.PI / 2); text(ctx, 'token di training D', 0, 0, { align: 'center', color: t.muted, size: 11 }); ctx.restore();
+      const lc = sC.get(), C = Math.pow(10, lc);
+      ctx.strokeStyle = t.amber; ctx.lineWidth = 2.5; ctx.beginPath(); let on = false;
+      for (let e = XN[0]; e <= XN[1]; e += 0.05) { const ld = lc - Math.log10(6) - e; if (ld < YD[0] || ld > YD[1]) { on = false; continue; } if (on) ctx.lineTo(X(e), Y(ld)); else ctx.moveTo(X(e), Y(ld)); on = true; }
+      ctx.stroke();
+      const N = scNopt(C, f), D = C / 6 / N, px = X(Math.log10(N)), py = Y(Math.log10(D));
+      if (px > left && px < left + pw && py > top && py < top + ph) { ctx.fillStyle = t.rose; ctx.beginPath(); ctx.arc(px, py, 6, 0, 7); ctx.fill(); text(ctx, 'ottimo', px + 9, py - 8, { color: t.rose, size: 11, weight: 700 }); }
+      [['Chinchilla 70B', 70e9, 1.4e12], ['Gopher 280B', 280e9, 300e9]].forEach(([nm, n, d]) => { const x = X(Math.log10(n)), y = Y(Math.log10(d)); ctx.strokeStyle = t.ink; ctx.lineWidth = 1.5; ctx.strokeRect(x - 4, y - 4, 8, 8); text(ctx, nm, x + 8, y + 4, { color: t.ink, size: 10 }); });
+      text(ctx, 'più scuro = loss più bassa · arancione: tutte le combinazioni con lo stesso calcolo C = 6ND', left + 6, top + 14, { color: t.ink, size: 10 });
+    });
+    const c2 = setupCanvas(cvU, (ctx, w, h, t) => {
+      const f = fit(), C = Math.pow(10, sC.get()), es = range(121).map(i => 7.5 + i * 0.05), Ls = es.map(e => scLoss(Math.pow(10, e), C / 6 / Math.pow(10, e), f));
+      const best = scNopt(C, f), c = chart(ctx, w, h, t, [{ xs: es, ys: Ls.map(l => Math.min(l, 4)), color: t.accent, lw: 2.5, label: 'loss a calcolo fisso' }], { xlabel: 'log₁₀ N  (a parità di calcolo: più N significa meno token)', ylabel: 'loss', nx: 5, xfmt: v => v.toFixed(1) });
+      ctx.strokeStyle = t.rose; ctx.setLineDash([4, 4]); ctx.beginPath(); ctx.moveTo(c.X(Math.log10(best)), c.y1); ctx.lineTo(c.X(Math.log10(best)), c.y0); ctx.stroke(); ctx.setLineDash([]);
+    });
+    function upd() {
+      const f = fit(), C = Math.pow(10, sC.get()), N = scNopt(C, f), D = C / 6 / N;
+      out.innerHTML = `ottimo a calcolo fisso: <b>${human(N)}</b> parametri e <b>${human(D)}</b> token (<b>${f2(D / N, 0)}</b> token per parametro) · loss prevista <b>${f2(scLoss(N, D, f), 3)}</b> · Chinchilla 70B/1,4T: ${f2(scLoss(70e9, 1.4e12, f), 3)}, Gopher 280B/300B: ${f2(scLoss(280e9, 300e9, f), 3)}`;
+      c1.redraw(); c2.redraw();
+    }
+    root.append(lab('Laboratorio · il paesaggio della loss e l\'ottimo a calcolo fisso',
+      controls(fsel, sC.el), cv, out, cvU,
+      el('p', { class: 'muted', html: 'Il quadrato vuoto sotto la linea arancione non è raggiungibile col budget scelto. Lungo la linea c\'è un compromesso a U: modelli troppo piccoli hanno pochi parametri, modelli troppo grandi vedono pochi token. Con le costanti della <b>replica</b> l\'ottimo è vicino a 20 token per parametro (la regola quotata di Chinchilla). Con le costanti <b>originali</b> lo stesso calcolo dà circa 60: i fit risentono dei dati e del metodo, e una replica ha mostrato problemi nel fit originale. Il messaggio affidabile è la forma, non la cifra esatta.' })));
+    upd();
+
+    /* ---- overtraining ---- */
+    const sT = slider({ label: 'loss obiettivo', min: 1.9, max: 2.6, step: 0.01, value: 2.1, fmt: v => v.toFixed(2), onInput: () => upd2() });
+    const sI = slider({ label: 'token serviti in vita (log₁₀ I)', min: 9, max: 15, step: 0.25, value: 13, fmt: v => '10^' + v.toFixed(2), onInput: () => upd2() });
+    const cv2 = canvasEl(240), out2 = el('div', { class: 'readout' });
+    const c3 = setupCanvas(cv2, (ctx, w, h, t) => {
+      const f = fit(), Lt = sT.get(), I = Math.pow(10, sI.get()), es = range(121).map(i => 8 + i * 0.04);
+      const tot = es.map(e => { const N = Math.pow(10, e), D = scDforLoss(N, Lt, f); return isFinite(D) ? Math.log10(scCost(N, D, I)) : NaN; });
+      const trn = es.map(e => { const N = Math.pow(10, e), D = scDforLoss(N, Lt, f); return isFinite(D) ? Math.log10(scCost(N, D, 0)) : NaN; });
+      const c = chart(ctx, w, h, t, [{ xs: es, ys: trn, color: t.muted, lw: 2, dash: [5, 4], label: 'solo training' }, { xs: es, ys: tot, color: t.accent, lw: 2.5, label: 'training + servizio' }], { xlabel: 'log₁₀ N (parametri del modello)', ylabel: 'log₁₀ FLOP', nx: 5, xfmt: v => v.toFixed(1) });
+      const b0 = scBestN(Lt, 0, f), b1 = scBestN(Lt, I, f);
+      [[b0, t.muted], [b1, t.rose]].forEach(([b, col]) => { if (!b) return; ctx.fillStyle = col; ctx.beginPath(); ctx.arc(c.X(b.e), c.Y(Math.log10(scCost(b.N, b.D, col === t.muted ? 0 : I))), 5, 0, 7); ctx.fill(); });
+    });
+    function upd2() {
+      const f = fit(), Lt = sT.get(), I = Math.pow(10, sI.get()), b0 = scBestN(Lt, 0, f), b1 = scBestN(Lt, I, f);
+      if (!b0 || !b1) { out2.textContent = 'Loss obiettivo non raggiungibile con queste costanti.'; c3.redraw(); return; }
+      const costIfTrainOpt = scCost(b0.N, b0.D, I);
+      out2.innerHTML = `ottimo solo-training: <b>${human(b0.N)}</b> param × <b>${human(b0.D)}</b> token (${f2(b0.D / b0.N, 0)} tok/param) · con ${human(I)} token serviti conviene <b>${human(b1.N)}</b> param × <b>${human(b1.D)}</b> token (<b>${f2(b1.D / b1.N, 0)}</b> tok/param) · costo totale <b>${f2(b1.c / costIfTrainOpt * 100, 0)}%</b> di quello del modello "ottimo per il training"`;
+      c3.redraw();
+    }
+    root.append(lab('Laboratorio · se il modello verrà usato molto, conviene "sovra-addestrarlo"',
+      el('p', { html: 'Chinchilla minimizza il costo del <i>training</i>. Ma se il modello servirà trilioni di token, ogni parametro costa 2 FLOP per ogni token servito. Fissiamo la loss da raggiungere e cerchiamo la dimensione che minimizza <b>training + inferenza</b>, cioè 6<var>ND</var> + 2<var>N</var>·<var>I</var>.' }),
+      controls(sT.el, sI.el), cv2, out2,
+      el('p', { class: 'muted', html: 'Con <var>I</var> piccolo il minimo coincide con l\'ottimo di Chinchilla; man mano che <var>I</var> cresce il minimo si sposta su modelli più piccoli addestrati per molti più token. È uno dei motivi per cui i modelli open recenti vedono centinaia o migliaia di token per parametro. La stessa spiegazione, in forma di calcolo, è nell\'articolo "Beyond Chinchilla-Optimal" (Sardana et al.).' })));
+    upd2();
+
+    root.append(el('h2', { text: 'Cosa ricordare' }));
+    root.append(el('ul', { class: 'prose', html: `
+      <li>La loss scende come potenza di <var>N</var> e <var>D</var>, con un limite <var>E</var> che nessuna scala supera. Ogni raddoppio dà un guadagno prevedibile ma decrescente.</li>
+      <li>A calcolo fisso conviene far crescere parametri e dati <b>insieme</b>; la proporzione dipende dal fit.</li>
+      <li>Le scaling laws dicono la <i>loss media</i> sul testo, non quando compariranno singole capacità: alcune abilità sembrano comparire all'improvviso, ma in parte dipende da come le si misura (metriche tutto-o-niente).</li>
+      <li>I dati sono un limite quanto il calcolo: i testi di qualità a disposizione non sono infiniti. Si ricorre a più epoche, dati sintetici, filtraggio.</li>
+      <li>Le leggi valgono entro il range misurato; estrapolare di molti ordini di grandezza è un rischio.</li>` }));
+
+    root.append(details('math', 'La matematica: l\'ottimo in forma chiusa', 'formule', `
+      <p>Con <var>D</var> = <var>C</var>/(6<var>N</var>) la loss lungo la linea a calcolo costante è</p>
+      <span class="eq"><var>L</var>(<var>N</var>) = <var>E</var> + <var>A</var> <var>N</var><sup>−α</sup> + <var>B</var> (<var>C</var>/6)<sup>−β</sup> <var>N</var><sup>β</sup></span>
+      <p>Derivando e ponendo a zero: −α<var>A</var> <var>N</var><sup>−α−1</sup> + β<var>B</var> (<var>C</var>/6)<sup>−β</sup> <var>N</var><sup>β−1</sup> = 0, da cui</p>
+      <span class="eq"><var>N</var><sub>opt</sub> = ( ${frac('α<var>A</var>', 'β<var>B</var>')} )<sup>1/(α+β)</sup> (<var>C</var>/6)<sup>β/(α+β)</sup>, &nbsp; <var>D</var><sub>opt</sub> = ${frac('<var>C</var>', '6 <var>N</var><sub>opt</sub>')}</span>
+      <p>Quindi <var>N</var><sub>opt</sub> ∝ <var>C</var><sup>β/(α+β)</sup> e <var>D</var><sub>opt</sub> ∝ <var>C</var><sup>α/(α+β)</sup>. Con α ≈ β i due crescono alla stessa velocità (≈ √<var>C</var>).</p>
+      <p><b>Dati necessari per una loss obiettivo.</b> Risolvendo <var>L</var>(<var>N</var>, <var>D</var>) = <var>L</var><sub>t</sub> per <var>D</var>: <var>D</var> = ( <var>B</var> / (<var>L</var><sub>t</sub> − <var>E</var> − <var>A</var><var>N</var><sup>−α</sup>) )<sup>1/β</sup>. Esiste solo se <var>L</var><sub>t</sub> &gt; <var>E</var> + <var>A</var><var>N</var><sup>−α</sup>: un modello piccolo ha un pavimento che nessun dato può abbassare.</p>
+      <p><b>Con inferenza.</b> Si minimizza 6<var>N</var><var>D</var>(<var>N</var>) + 2<var>N</var><var>I</var> lungo la curva <var>D</var>(<var>N</var>) a loss costante; il laboratorio lo fa numericamente.</p>`));
+    root.append(el('h2', { text: 'Verifica rapida' }));
+    root.append(quiz([
+      { q: 'Perché il costo di training è circa 6ND FLOP?', opts: ['6 sono i layer tipici', 'Circa 2 FLOP per parametro nel forward e circa 4 nel backward, per ogni token', 'Perché si fanno 6 epoche'], ans: 1, why: 'Il passaggio in avanti ha una moltiplicazione-somma (2 FLOP) per parametro; l\'indietro calcola due prodotti (gradiente rispetto ai pesi e agli input): circa il doppio.' },
+      { q: 'A parità di calcolo, un modello enorme addestrato su pochissimi token è…', opts: ['sempre il migliore', 'quasi sempre subottimo: il termine dei dati B/D^β domina', 'equivalente a uno piccolo'], ans: 1, why: 'Il compromesso a U: oltre l\'ottimo, ogni parametro in più toglie token e il guadagno sui parametri non compensa la perdita sui dati.' },
+      { q: 'Perché un modello destinato a molto traffico si addestra su più token dell\'ottimo di Chinchilla?', opts: ['Per far salire la loss', 'Perché il costo di inferenza cresce con N, quindi conviene un modello più piccolo addestrato più a lungo', 'Perché la KV cache lo richiede'], ans: 1, why: 'Minimizzare training + inferenza sposta l\'ottimo verso N più piccoli e D più grandi.' },
+    ]));
+  },
+});
+
+'use strict';
+/* Module 13 - quantization: symmetric round-to-nearest with per-tensor or per-group scales */
+/* group = number of consecutive weights sharing one scale (Infinity = one scale for the whole tensor) */
+function quantize(w, bits, group) {
+  const n = w.length, qmax = Math.pow(2, bits - 1) - 1, g = Math.min(group, n), deq = new Float64Array(n), scales = [];
+  for (let s = 0; s < n; s += g) {
+    const e = Math.min(n, s + g); let m = 0; for (let i = s; i < e; i++) m = Math.max(m, Math.abs(w[i]));
+    const sc = m / qmax || 1; scales.push(sc);
+    for (let i = s; i < e; i++) deq[i] = Math.max(-qmax, Math.min(qmax, Math.round(w[i] / sc))) * sc;
+  }
+  return { deq, scales, qmax };
+}
+const quantRMSE = (w, d) => Math.sqrt(w.reduce((s, v, i) => s + (v - d[i]) * (v - d[i]), 0) / w.length);
+function quantWeights(n, sigma, nOut, mag, seed = 4) {
+  const r = rng(seed), w = Float64Array.from({ length: n }, () => r.gauss() * sigma);
+  for (let k = 0; k < nOut; k++) w[Math.floor((k + 0.5) * n / Math.max(1, nOut))] = (k % 2 ? -1 : 1) * sigma * mag;
+  return w;
+}
+/* bits per weight actually stored: the payload plus one fp16 scale per group */
+const quantBitsPerWeight = (bits, group) => bits + (isFinite(group) ? 16 / group : 0);
+LAB.tests.quant = { quantize, quantRMSE, quantWeights, quantBitsPerWeight };
+
+registerModule({
+  id: 'm13', n: 13, title: 'Quantizzazione', eyebrow: 'meno bit per ogni peso', heading: 'Quantizzazione: far stare il modello nella memoria',
+  lede: 'Un peso in fp16 occupa 16 bit. Ma ne servono davvero tutti? Memorizzare i pesi con 8 o 4 bit riduce la memoria di 2–4× (e, nel decode, che è limitato dalla lettura dei pesi, aumenta i token al secondo) in cambio di un piccolo errore di arrotondamento. Il trucco è dove si sceglie la scala.',
+  build(root) {
+    root.append(el('div', { html: `
+      <p>La <b>quantizzazione</b> simmetrica più semplice sceglie una scala <var>s</var> e memorizza ogni peso come intero: <var>q</var> = round(<var>w</var>/<var>s</var>), limitato a [−<var>q</var><sub>max</sub>, <var>q</var><sub>max</sub>] con <var>q</var><sub>max</sub> = 2<sup>bit−1</sup> − 1. Per usarlo si ricostruisce <var>ŵ</var> = <var>s</var>·<var>q</var>. Il peso torna "arrotondato" al multiplo di <var>s</var> più vicino.</p>
+      <p>Di solito <var>s</var> = max|<var>w</var>| / <var>q</var><sub>max</sub>, cosicché il peso più grande occupa tutta la scala. Qui nasce il problema: <b>un solo outlier</b> allarga la scala per tutti gli altri, che finiscono tutti sugli stessi pochi livelli. La soluzione standard: una scala per ogni <b>gruppo</b> di pesi (per esempio 32 o 128 consecutivi).</p>` }));
+
+    const N = 2048, SIG = 0.02;
+    const sBits = slider({ label: 'bit per peso', min: 2, max: 8, value: 4, onInput: () => upd() });
+    let grpV = Infinity; const gsel = select([['Infinity', 'una scala per tutto il tensore'], ['256', 'gruppi da 256'], ['64', 'gruppi da 64'], ['32', 'gruppi da 32']], 'Infinity', v => { grpV = +v; upd(); }, 'granularità');
+    const sOut = slider({ label: 'outlier', min: 0, max: 8, value: 2, onInput: () => upd() });
+    const sMag = slider({ label: 'grandezza outlier (× σ)', min: 5, max: 60, value: 30, onInput: () => upd() });
+    const cv = canvasEl(260), cvE = canvasEl(220), out = el('div', { class: 'readout' });
+    let W = null, Q = null;
+    const c1 = setupCanvas(cv, (ctx, w, h, t) => {
+      if (!W) return;
+      const left = 40, right = 10, top = 22, bot = 34, pw = w - left - right, ph = h - top - bot, lim = Math.max(...W.map(Math.abs)) * 1.05, nb = 90, X = v => left + (v + lim) / (2 * lim) * pw;
+      const hist = new Array(nb).fill(0); W.forEach(v => { hist[Math.min(nb - 1, Math.floor((v + lim) / (2 * lim) * nb))]++; });
+      const hm = Math.max(...hist), Yb = c => top + ph - Math.sqrt(c / hm) * ph;
+      hist.forEach((c, i) => { ctx.fillStyle = rgba(t.muted, 0.45); ctx.fillRect(left + i * pw / nb, Yb(c), pw / nb - 0.5, top + ph - Yb(c)); });
+      // quantisation levels of the first group
+      const q0 = Q.qmax, sc = Q.scales[0];
+      ctx.strokeStyle = rgba(t.accent, 0.8); ctx.lineWidth = 1;
+      for (let k = -q0; k <= q0; k++) { const x = X(k * sc); if (x < left || x > left + pw) continue; ctx.beginPath(); ctx.moveTo(x, top); ctx.lineTo(x, top + ph); ctx.stroke(); }
+      ctx.strokeStyle = t.line; ctx.strokeRect(left, top, pw, ph);
+      text(ctx, 'istogramma dei pesi (radice quadrata dell\'altezza)  ·  righe blu = livelli rappresentabili dalla scala del primo gruppo', left, 13, { color: t.muted, size: 10 });
+      [-lim, 0, lim].forEach(v => text(ctx, f2(v, 2), X(v), top + ph + 14, { align: 'center', color: t.muted, size: 10 }));
+      text(ctx, `livelli distinti usati dai pesi entro 3σ: ${distinctLevels()}`, left, h - 6, { color: t.ink, size: 11 });
+    });
+    function distinctLevels() {
+      const s = new Set(); W.forEach((v, i) => { if (Math.abs(v) < 3 * SIG) s.add(Math.round(Q.deq[i] / Q.scales[Math.floor(i / Math.min(grpV, N))])); }); return s.size;
+    }
+    const c2 = setupCanvas(cvE, (ctx, w, h, t) => {
+      const bs = [2, 3, 4, 5, 6, 7, 8], mk = (grp) => bs.map(b => Math.log10(quantRMSE(W, quantize(W, b, grp).deq) / SIG));
+      const c = chart(ctx, w, h, t, [
+        { xs: bs, ys: mk(Infinity), color: t.rose, lw: 2.5, dots: true, label: 'una scala per tensore' }, { xs: bs, ys: mk(64), color: t.accent, lw: 2.5, dots: true, label: 'gruppi da 64' }, { xs: bs, ys: mk(32), color: t.teal, lw: 2.5, dots: true, label: 'gruppi da 32' }],
+        { xlabel: 'bit per peso', ylabel: 'log₁₀ (errore RMS / σ)', nx: 6, ny: 4 });
+      ctx.strokeStyle = t.ink; ctx.setLineDash([3, 4]); ctx.beginPath(); ctx.moveTo(c.X(sBits.get()), c.y1); ctx.lineTo(c.X(sBits.get()), c.y0); ctx.stroke(); ctx.setLineDash([]);
+    });
+    function upd() {
+      W = quantWeights(N, SIG, sOut.get(), sMag.get()); const grp = grpV; Q = quantize(W, sBits.get(), grp);
+      const e = quantRMSE(W, Q.deq), sqnr = 20 * Math.log10(Math.sqrt(W.reduce((s, v) => s + v * v, 0) / N) / e);
+      out.innerHTML = `scala primo gruppo: <b>${f2(Q.scales[0], 5)}</b> (σ dei pesi = ${SIG}) · errore RMS <b>${f2(e, 5)}</b> = ${f2(e / SIG * 100, 1)}% di σ · rapporto segnale/rumore <b>${f2(sqnr, 1)} dB</b> · bit effettivi per peso, scale incluse: <b>${f2(quantBitsPerWeight(sBits.get(), grp), 2)}</b>`;
+      c1.redraw(); c2.redraw();
+    }
+    root.append(lab('Laboratorio · scala, outlier e granularità (quantizzatore vero su 2048 pesi gaussiani)',
+      controls(sBits.el, gsel), controls(sOut.el, sMag.el), cv, out, cvE,
+      el('p', { class: 'muted', html: 'Prova: 4 bit, nessun outlier → quasi tutti i pesi cadono su pochi livelli ma bene distribuiti. Poi aggiungi 2 outlier da 30σ con una sola scala: la scala si allarga di molte volte e i pesi centrali collassano su 1–3 livelli. Passando a gruppi da 32 solo i gruppi che contengono l\'outlier soffrono. Costo dei gruppi: una scala fp16 ogni 32 pesi aggiunge 0,5 bit per peso.' })));
+    upd();
+
+    /* ---- memory ---- */
+    const MOD = [['Llama 3 8B', 8.03e9], ['Llama 3 70B', 70.6e9], ['Modello da 405B', 405e9]];
+    const cvM = canvasEl(250), outM = el('div', { class: 'readout' });
+    const cM = setupCanvas(cvM, (ctx, w, h, t) => {
+      const fm = [['fp16', 16, Infinity], ['int8 (gruppi da 128)', 8, 128], ['4 bit (gruppi da 64)', 4, 64]], left = 150, right = 70, rowH = 22, top = 22, mx = 405e9 * 2 / 1e9, s = (w - left - right) / mx;
+      let y = top; text(ctx, 'memoria dei soli pesi (GB) · linea: GPU da 80 GB', 4, 12, { color: t.muted, size: 10 });
+      MOD.forEach(([nm, n]) => { text(ctx, nm, 4, y + 12, { color: t.ink, size: 12, sans: true, weight: 700 }); y += 16;
+        fm.forEach(([fn, b, g], i) => { const gb = n * quantBitsPerWeight(b, g) / 8 / 1e9; ctx.fillStyle = [t.rose, t.accent, t.teal][i]; ctx.fillRect(left, y, gb * s, 15); text(ctx, fn, left - 6, y + 12, { align: 'right', color: t.muted, size: 10 }); text(ctx, f2(gb, 0) + ' GB', left + gb * s + 5, y + 12, { color: t.ink, size: 10 }); y += rowH - 4; });
+        y += 6; });
+      ctx.strokeStyle = t.amber; ctx.lineWidth = 2; ctx.setLineDash([5, 4]); ctx.beginPath(); ctx.moveTo(left + 80 * s, top + 10); ctx.lineTo(left + 80 * s, h - 6); ctx.stroke(); ctx.setLineDash([]);
+    });
+    root.append(lab('Laboratorio · quanta memoria occupano i pesi', cvM, outM,
+      el('p', { class: 'muted', html: 'Conto semplice: parametri × bit effettivi ÷ 8. Non include KV cache, attivazioni né overhead (modulo 9). Un modello da 70B in fp16 (≈141 GB) non entra in una GPU da 80 GB; a 4 bit con gruppi da 64 (≈ 4,25 bit effettivi) sì, ma con poco spazio per il contesto.' })));
+    outM.innerHTML = 'Llama 3 70B: fp16 ≈ <b>141 GB</b> → 4 bit con gruppi da 64 ≈ <b>37 GB</b>. L\'8B in fp16 ≈ <b>16 GB</b> → 4 bit ≈ <b>4,3 GB</b>: abbastanza piccolo per un portatile.';
+    cM.redraw();
+
+    root.append(el('h2', { text: 'Dove si applica e come si fa meglio' }));
+    root.append(el('ul', { class: 'prose', html: `
+      <li><b>Post-training quantization (PTQ)</b>: si quantizza un modello già addestrato. Il round-to-nearest che vedi qui è la base; metodi come <b>GPTQ</b> o <b>AWQ</b> scelgono gli arrotondamenti guardando l'effetto sull'<i>uscita</i> (con dati di calibrazione), non solo l'errore sul peso.</li>
+      <li><b>Quantization-aware training (QAT)</b>: si simula la quantizzazione durante il training perché il modello si adatti.</li>
+      <li><b>Attivazioni e KV cache</b> si possono quantizzare, ma le attivazioni hanno outlier più estremi dei pesi (alcuni canali sono molto più grandi degli altri) e sono più delicate.</li>
+      <li>Si risparmia memoria <i>e</i> banda: nel decode (modulo 9) il tempo dipende dai byte letti, quindi meno bit significa più token/s, se i kernel dequantizzano in modo efficiente.</li>
+      <li>La perdita di qualità cresce al diminuire dei bit; dipende da modello e metodo e va <b>misurata</b> sul compito che interessa. In questo laboratorio non misuriamo la qualità di un modello vero: mostriamo soltanto l'errore sui pesi.</li>` }));
+
+    root.append(details('math', 'La matematica: errore di quantizzazione', 'formule', `
+      <p>Con scala <var>s</var>, l'errore di arrotondamento di un peso che non satura è <var>e</var> = <var>ŵ</var> − <var>w</var> ∈ [−<var>s</var>/2, <var>s</var>/2]. Se <var>w</var> è abbastanza "liscio" rispetto a <var>s</var>, l'errore è circa uniforme e</p>
+      <span class="eq">E[<var>e</var>²] = ${frac('<var>s</var>²', '12')}, &nbsp; RMS = ${frac('<var>s</var>', '√12')} ≈ 0,29 <var>s</var></span>
+      <p>(il test automatico verifica questa relazione sul quantizzatore del laboratorio). Poiché <var>s</var> = max|<var>w</var>|/<var>q</var><sub>max</sub> e <var>q</var><sub>max</sub> ≈ 2<sup>bit−1</sup>, ogni bit in meno <b>raddoppia</b> l'errore: circa 6 dB di rapporto segnale/rumore per bit.</p>
+      <p><b>Effetto di un outlier.</b> Se un peso vale <var>m</var>σ, la scala per-tensore diventa <var>s</var> ≈ <var>m</var>σ/<var>q</var><sub>max</sub> invece di ≈ 3σ/<var>q</var><sub>max</sub>: l'errore sui pesi normali cresce di circa <var>m</var>/3 volte. Con gruppi di dimensione <var>g</var> l'effetto resta confinato nel gruppo.</p>
+      <p><b>Errore sull'uscita.</b> Per <var>y</var> = Σ<sub>i</sub> <var>w</var><sub>i</sub><var>x</var><sub>i</sub> con errori indipendenti sui pesi, Var(<var>ŷ</var> − <var>y</var>) = Σ<sub>i</sub> Var(<var>e</var><sub>i</sub>) <var>x</var><sub>i</sub>²: gli errori si sommano in potenza, non in ampiezza, ed è per questo che l'uscita è spesso più robusta di quanto l'errore sul singolo peso lasci pensare.</p>`));
+    root.append(el('h2', { text: 'Verifica rapida' }));
+    root.append(quiz([
+      { q: 'Perché una scala per tutto il tensore soffre con gli outlier?', opts: ['Perché l\'outlier si perde', 'Perché la scala si allarga per includere l\'outlier e tutti gli altri pesi usano pochissimi livelli', 'Perché gli outlier sono sempre negativi'], ans: 1, why: 'La scala è max|w|/qmax: un valore enorme rende i passi di quantizzazione grandi rispetto ai pesi tipici.' },
+      { q: 'Quanto cambia l\'errore RMS dei pesi togliendo un bit (a parità di scala per il valore massimo)?', opts: ['Si dimezza', 'Raddoppia', 'Resta uguale'], ans: 1, why: 'Il numero di livelli si dimezza, il passo s raddoppia e l\'errore RMS (≈ 0,29 s) con lui.' },
+      { q: 'Perché quantizzare i pesi velocizza il decode?', opts: ['Perché si fanno meno FLOP', 'Perché si leggono meno byte dalla memoria a ogni token e il decode è limitato dalla lettura dei pesi', 'Perché la cache sparisce'], ans: 1, why: 'Modulo 9: nel decode il tempo è dominato dalla banda di memoria, non dal calcolo.' },
+    ]));
+  },
+});
+
+'use strict';
 /* App shell: builds the rail (the model stack as navigation) and shows one module at a time. */
 (function () {
   const rail = $('#rail'), stage = $('#stage'), mods = LAB.modules;
@@ -2560,6 +2793,7 @@ registerModule({
   try { JSON.parse(localStorage.getItem('llmlab.seen') || '[]').forEach(x => seen.add(x)); } catch (e) { /* storage may be unavailable */ }
 
   const nodes = {}, pages = {};
+  const PART = { m0: 'Fondamenti', m7: 'Output e training', m9: 'Modelli in produzione', m14: 'Capire e usare', m16: 'Capstone' };
   const mkNode = m => {
     const b = el('button', { class: 'node', type: 'button', 'data-id': m.id, onclick: () => show(m.id) },
       el('span', { class: 'idx', text: String(m.n) }), el('span', { text: m.title }), el('span', { class: 'seen' }));
@@ -2572,13 +2806,12 @@ registerModule({
   const list = el('div', { class: 'stack' });
   const first = mods.filter(m => !m.layer), inLayer = mods.filter(m => m.layer), after = mods.filter(m => !m.layer && m.n > Math.max(...inLayer.map(x => x.n)));
   const before = first.filter(m => m.n < Math.min(...inLayer.map(x => x.n)));
-  before.forEach(m => list.append(mkNode(m)));
+  const partLabel = m => PART[m.id] ? el('div', { class: 'part-label', text: PART[m.id] }) : null;
+  before.forEach(m => { const pl = partLabel(m); if (pl) list.append(pl); list.append(mkNode(m)); });
   list.append(el('div', { class: 'layers-label', text: '× N layer (ripetuto)' }));
   const lay = el('div', { class: 'layers' }); inLayer.forEach(m => lay.append(mkNode(m))); list.append(lay);
-  after.forEach(m => list.append(mkNode(m)));
+  after.forEach(m => { const pl = partLabel(m); if (pl) list.append(pl); list.append(mkNode(m)); });
   rail.append(list);
-  rail.append(el('div', { class: 'roadmap' }, el('b', { text: 'Prossimi moduli' }),
-    el('ul', {}, ['Interpretabilità', 'RAG, tool use, agenti', 'Transformer vero addestrato nel browser'].map(t => el('li', { text: t })))));
   const th = el('div', { class: 'theme-row' });
   [['auto', 'Auto'], ['light', 'Chiaro'], ['dark', 'Scuro']].forEach(([v, t]) => th.append(button(t, () => {
     if (v === 'auto') document.documentElement.removeAttribute('data-theme'); else document.documentElement.setAttribute('data-theme', v);
