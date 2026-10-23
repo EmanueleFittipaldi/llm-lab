@@ -271,5 +271,38 @@ const RG = run('LAB.tests.rag');
   const run5 = RG.agentRun("Come disdico l'abbonamento?"); ok('agent: answers from the right paragraph', /Annulla rinnovo/.test(run5[0].obs) && /disdire/.test(run5[run5.length - 1].answer));
 }
 
+// --- module 16: the transformer
+const GP = run('LAB.tests.gpt');
+{
+  const net = run('new LAB.tests.gpt.TinyGPT(7, { D: 8, H: 2, L: 2, T: 6, F: 12 }, 3)'), rr0 = run('rng')(9);
+  const batch = [0, 1].map(() => Int32Array.from({ length: 7 }, () => Math.floor(rr0() * 7)));
+  // perturb away from the init so that LayerNorm gains/biases and all biases carry non-trivial gradients
+  net.slots.forEach(([p]) => { for (let i = 0; i < p.length; i++) p[i] += (rr0() - 0.5) * 0.2; });
+  net.lossAndGrad(batch); const grads = net.slots.map(([, g]) => Float64Array.from(g)); let maxErr = 0, worst = '';
+  net.slots.forEach(([p], si) => {
+    const idxs = [0, Math.floor(p.length / 3), Math.floor(2 * p.length / 3), p.length - 1];
+    for (const i of idxs) { const h = 1e-5, o = p[i]; p[i] = o + h; const a = net.lossAndGrad(batch, false); p[i] = o - h; const b2 = net.lossAndGrad(batch, false); p[i] = o; const num = (a - b2) / (2 * h), ana = grads[si][i], err = Math.abs(num - ana) / (Math.abs(num) + Math.abs(ana) + 1e-5); if (err > maxErr) { maxErr = err; worst = `slot ${si} idx ${i}: num ${num.toExponential(3)} ana ${ana.toExponential(3)}`; } }
+  });
+  ok('transformer: every parameter group matches finite differences (2 layers, 2 heads)', maxErr < 1e-5, maxErr.toExponential(1) + ' ' + (maxErr > 1e-6 ? worst : ''));
+  const x1 = Int32Array.from([1, 2, 3, 4, 5, 6]), x2 = Int32Array.from([1, 2, 3, 0, 0, 0]), l1 = net.forward(x1).logits, l2 = net.forward(x2).logits;
+  let diffBefore = 0; for (let t2 = 0; t2 < 3; t2++) for (let v = 0; v < 7; v++) diffBefore = Math.max(diffBefore, Math.abs(l1[t2 * 7 + v] - l2[t2 * 7 + v]));
+  ok('causality: changing future tokens does not change earlier logits', diffBefore < 1e-12, diffBefore.toExponential(1));
+  const ca = net.forward(x1).cache.layers[1].p; let rowOk = true; for (let hh = 0; hh < 2; hh++) for (let i = 0; i < 6; i++) { let s = 0; for (let j = 0; j < 6; j++) { const v = ca[(hh * 6 + i) * 6 + j]; if (j > i && v !== 0) rowOk = false; s += v; } if (Math.abs(s - 1) > 1e-12) rowOk = false; }
+  ok('attention rows sum to 1 and are zero above the diagonal', rowOk);
+  const D = 16, T = 16, F = 48, L = 1, V0 = 29, net2 = run(`new LAB.tests.gpt.TinyGPT(${V0}, { D: 16, H: 2, L: 1, T: 16 }, 11)`);
+  const expected = V0 * D + T * D + 2 * D + L * (4 * D * D + 2 * D * F + F + 5 * D);
+  ok('parameter count matches the formula in the lesson', net2.nParams === expected, net2.nParams + ' vs ' + expected);
+  const g = (x, d = 1e-6) => Math.abs(x) < d;
+  ok('GELU derivative matches finite differences', [-3, -0.5, 0, 0.7, 2.5].every(u => g((GP.geluF(u + 1e-6) - GP.geluF(u - 1e-6)) / 2e-6 - GP.geluD(u), 1e-6)));
+}
+{
+  const corpus = run('LAB.tests.CORPUS'), chars = [...new Set(corpus)].sort(), data = Int32Array.from([...corpus].map(c => chars.indexOf(c))), V = chars.length, nTr = Math.floor(data.length * 0.9);
+  const net = run(`new LAB.tests.gpt.TinyGPT(${V}, { D: 16, H: 2, L: 1, T: 16 }, 11)`); const l0 = net.evalLoss(data, 0, nTr);
+  let seedG = 21; const rg = () => (seedG = (seedG * 1664525 + 1013904223) % 4294967296) / 4294967296; const t0 = Date.now();
+  for (let s = 0; s < 400; s++) { const batch = []; for (let b = 0; b < 8; b++) { const st = Math.floor(rg() * (nTr - 17)); batch.push(data.subarray(st, st + 17)); } net.lossAndGrad(batch); net.adam(0.01); }
+  const l1 = net.evalLoss(data, 0, nTr), v1 = net.evalLoss(data, nTr, data.length), ms = (Date.now() - t0) / 400;
+  ok('transformer learns: untrained loss ≈ ln V, trained loss far below', Math.abs(l0 - Math.log(V)) < 0.4 && l1 < l0 - 0.9, `${l0.toFixed(2)} -> train ${l1.toFixed(2)}, val ${v1.toFixed(2)} · ${ms.toFixed(1)} ms/step`);
+}
+
 console.log(bad ? `\n${bad} check(s) failed` : '\nall logic checks passed');
 process.exit(bad ? 1 : 0);
