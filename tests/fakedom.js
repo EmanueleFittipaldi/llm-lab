@@ -51,7 +51,7 @@ function makeEnv() {
     document, devicePixelRatio: 1, innerWidth: 1000, innerHeight: 800, matchMedia: () => ({ matches: false, addEventListener() {} }),
     addEventListener: (t, f) => (winL[t] ||= []).push(f), dispatchEvent: e => (winL[e.type] || []).forEach(f => f(e)),
     getComputedStyle: () => ({ getPropertyValue: () => '#3a6bd6' }), scrollTo() {}, requestAnimationFrame: f => { raf.push(f); return raf.length; }, cancelAnimationFrame() {},
-    ResizeObserver: class { constructor(cb) { this.cb = cb; ro.push(cb); } observe() { this.cb([]); } },
+    ResizeObserver: class { constructor(cb) { this.cb = cb; ro.push(cb); } observe() { Promise.resolve().then(() => this.cb([])); } },
     MutationObserver: class { observe() {} },
     Event: class { constructor(t) { this.type = t; } },
     localStorage: { getItem: () => null, setItem() {} }, history: { replaceState() {} }, location: { hash: '' }, performance: { now: () => Date.now() },

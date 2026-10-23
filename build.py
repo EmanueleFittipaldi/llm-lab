@@ -5,7 +5,7 @@ import pathlib
 root = pathlib.Path(__file__).parent
 src = root / "src"
 order = ["core.js", "m0_overview.js", "m1_tokenizer.js", "m2_embeddings.js", "m3_positions.js",
-         "m4_attention.js", "m5_heads.js", "m6_block.js", "m7_sampling.js", "m8_training.js", "main.js"]
+         "m4_attention.js", "m5_heads.js", "m6_block.js", "m7_sampling.js", "m8_lm.js", "m8_training.js", "main.js"]
 js = "\n".join((src / "js" / f).read_text(encoding="utf-8") for f in order if (src / "js" / f).exists())
 html = (src / "index.html").read_text(encoding="utf-8")
 html = html.replace("/*__CSS__*/", (src / "style.css").read_text(encoding="utf-8"))

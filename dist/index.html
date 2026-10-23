@@ -1,0 +1,2037 @@
+<title>LLM Lab</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Archivo:wght@500;600;700;800&family=IBM+Plex+Mono:wght@400;500&family=Newsreader:ital,opsz,wght@0,6..72,400;0,6..72,500;1,6..72,400&display=swap" rel="stylesheet">
+<style>
+/* Layout: a left rail that IS the model's stack (input at the top, training at the bottom) doubles as navigation.
+   The stage shows one module at a time: intuition -> interactive lab -> math -> quiz. */
+:root {
+  --bg: #EDF0F6;
+  --surface: #FAFBFE;
+  --surface-2: #E3E8F3;
+  --ink: #12203F;
+  --muted: #55628A;
+  --line: #C6CEE2;
+  --grid: rgba(40, 70, 160, 0.07);
+  --accent: #2B47D6;
+  --accent-ink: #FFFFFF;
+  --amber: #C96F00;
+  --teal: #0A8670;
+  --rose: #C4175F;
+  --display: 'Archivo', 'Helvetica Neue', Arial, sans-serif;
+  --serif: 'Newsreader', Georgia, 'Times New Roman', serif;
+  --mono: 'IBM Plex Mono', ui-monospace, Menlo, Consolas, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #0C1224; --surface: #131B33; --surface-2: #1C2645; --ink: #E7ECFA; --muted: #9AA8D0;
+    --line: #2B3862; --grid: rgba(140, 170, 255, 0.06); --accent: #8197FF; --accent-ink: #0C1224;
+    --amber: #FFB347; --teal: #3FD8B8; --rose: #FF78A8; color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #0C1224; --surface: #131B33; --surface-2: #1C2645; --ink: #E7ECFA; --muted: #9AA8D0;
+  --line: #2B3862; --grid: rgba(140, 170, 255, 0.06); --accent: #8197FF; --accent-ink: #0C1224;
+  --amber: #FFB347; --teal: #3FD8B8; --rose: #FF78A8; color-scheme: dark;
+}
+
+* { box-sizing: border-box; }
+html { scroll-behavior: smooth; }
+body {
+  background-color: var(--bg);
+  background-image: linear-gradient(var(--grid) 1px, transparent 1px), linear-gradient(90deg, var(--grid) 1px, transparent 1px);
+  background-size: 28px 28px;
+  color: var(--ink);
+  font: 17px/1.65 var(--serif);
+  padding-inline: max(16px, env(safe-area-inset-left, 0px)) max(16px, env(safe-area-inset-right, 0px));
+  padding-block: 0 56px;
+}
+body::before {
+  content: ""; position: fixed; inset: 0 0 auto; height: env(safe-area-inset-top, 0px); z-index: 10; background: var(--bg);
+}
+button, input, select, textarea { font: inherit; color: inherit; }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+.shell {
+  display: grid; grid-template-columns: 264px minmax(0, 1fr); gap: clamp(20px, 4vw, 56px);
+  max-width: 1340px; margin: 0 auto;
+}
+
+/* ---------- rail ---------- */
+.rail {
+  position: sticky; top: env(safe-area-inset-top, 0px); align-self: start;
+  max-height: calc(100vh - env(safe-area-inset-top, 0px)); overflow-y: auto; padding: 28px 0 24px;
+  display: flex; flex-direction: column; gap: 18px;
+}
+.brand { font: 800 30px/1 var(--display); letter-spacing: -0.03em; }
+.brand span { color: var(--accent); }
+.tag { font: 500 12px/1.4 var(--mono); color: var(--muted); margin-top: 8px; }
+.stack { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 2px; }
+.node {
+  display: flex; gap: 10px; align-items: baseline; width: 100%; text-align: left; cursor: pointer;
+  padding: 8px 10px; border: 1px solid transparent; border-radius: 6px; background: none;
+  font: 600 14px/1.3 var(--display);
+}
+.node:hover { background: var(--surface-2); }
+.node[aria-current="true"] { background: var(--surface); border-color: var(--line); }
+.node .idx { font: 500 12px var(--mono); color: var(--muted); width: 1.3em; flex: none; }
+.node .seen { margin-left: auto; width: 7px; height: 7px; border-radius: 50%; background: var(--teal); opacity: 0; flex: none; align-self: center; }
+.node.visited .seen { opacity: 1; }
+.layers { margin: 6px 0 6px 8px; padding-left: 8px; border-left: 2px solid var(--accent); display: flex; flex-direction: column; gap: 2px; }
+.layers-label { font: 500 11px var(--mono); color: var(--accent); margin: 8px 0 -2px 10px; letter-spacing: 0.04em; }
+.roadmap { font: 500 12px/1.5 var(--mono); color: var(--muted); border-top: 1px solid var(--line); padding-top: 14px; }
+.roadmap b { display: block; font: 600 11px var(--display); text-transform: uppercase; letter-spacing: 0.09em; margin-bottom: 4px; }
+.roadmap ul { margin: 0; padding-left: 16px; }
+.theme-row { display: flex; gap: 6px; }
+.theme-row .btn { flex: 1; padding: 5px 6px; font-size: 12px; }
+
+/* ---------- module page ---------- */
+.stage { min-width: 0; padding: 28px 0 0; }
+.module > * { max-width: 100%; }
+.eyebrow { font: 500 12px var(--mono); color: var(--accent); letter-spacing: 0.06em; text-transform: uppercase; }
+.module h1 { font: 800 clamp(30px, 4.4vw, 46px)/1.05 var(--display); letter-spacing: -0.03em; margin: 8px 0 14px; text-wrap: balance; }
+.module h2 { font: 700 23px/1.2 var(--display); letter-spacing: -0.015em; margin: 40px 0 10px; text-wrap: balance; }
+.module h3 { font: 700 16px/1.3 var(--display); margin: 22px 0 6px; }
+.lede { font-size: 1.22em; line-height: 1.5; font-style: italic; color: var(--muted); max-width: 62ch; margin: 0 0 18px; }
+.module p, .module ul.prose, .module ol.prose { max-width: 68ch; }
+.module p { margin: 0 0 14px; }
+.module ul.prose, .module ol.prose { padding-left: 22px; margin: 0 0 14px; }
+.module li { margin-bottom: 4px; }
+code, .mono { font: 500 0.86em var(--mono); background: var(--surface-2); padding: 1px 5px; border-radius: 4px; }
+.module a { color: var(--accent); }
+
+/* labs */
+.lab {
+  background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 16px; margin: 22px 0;
+  display: flex; flex-direction: column; gap: 14px; min-width: 0;
+}
+.lab-title { font: 600 12px var(--display); text-transform: uppercase; letter-spacing: 0.09em; color: var(--muted); display: flex; gap: 8px; align-items: center; }
+.lab-title::before { content: ""; width: 8px; height: 8px; border-radius: 2px; background: var(--accent); }
+.lab p { font-size: 0.95em; margin: 0; }
+.controls { display: flex; flex-wrap: wrap; gap: 10px 22px; align-items: center; }
+.ctl { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.ctl-l { font: 500 13px var(--display); color: var(--muted); white-space: nowrap; }
+.ctl input[type="range"] { width: min(170px, 38vw); accent-color: var(--accent); }
+.ctl output, .val { font: 500 13px var(--mono); min-width: 3.4em; text-align: right; font-variant-numeric: tabular-nums; }
+.btn {
+  font: 600 13px var(--display); padding: 7px 13px; border-radius: 6px; border: 1px solid var(--line);
+  background: var(--surface-2); color: var(--ink); cursor: pointer;
+}
+.btn:hover { border-color: var(--accent); }
+.btn.primary { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
+.btn[aria-pressed="true"] { border-color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent); }
+.btn:disabled { opacity: 0.5; cursor: default; }
+select, input[type="text"], input[type="number"], textarea {
+  background: var(--bg); border: 1px solid var(--line); border-radius: 6px; padding: 6px 9px; font: 500 14px var(--mono); max-width: 100%;
+}
+textarea { width: 100%; min-height: 96px; resize: vertical; line-height: 1.5; }
+label.chk { display: inline-flex; gap: 6px; align-items: center; font: 500 13px var(--display); color: var(--muted); cursor: pointer; }
+canvas.cv { width: 100%; display: block; background: var(--bg); border: 1px solid var(--line); border-radius: 6px; }
+.grid2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 330px), 1fr)); gap: 16px; align-items: start; }
+.grid2 > * { min-width: 0; }
+.readout { font: 500 13px/1.6 var(--mono); color: var(--ink); }
+.readout b { color: var(--accent); font-weight: 500; }
+.muted { color: var(--muted); }
+.scroll-x { overflow-x: auto; max-width: 100%; }
+.tbl { border-collapse: collapse; font: 500 13px var(--mono); font-variant-numeric: tabular-nums; }
+.tbl th, .tbl td { padding: 3px 9px; text-align: right; border-bottom: 1px solid var(--line); white-space: nowrap; }
+.tbl th { color: var(--muted); font-weight: 500; }
+.tbl td:first-child, .tbl th:first-child { text-align: left; }
+.tbl tr.sel td { background: var(--surface-2); }
+.tbl tr.pick { cursor: pointer; }
+.chips { display: flex; flex-wrap: wrap; gap: 4px; }
+.chip { display: inline-block; padding: 1px 7px; border-radius: 5px; font: 500 13px var(--mono); border: 1px solid var(--line); background: var(--surface-2); white-space: pre; }
+.chip.c0 { border-color: var(--accent); } .chip.c1 { border-color: var(--amber); } .chip.c2 { border-color: var(--teal); } .chip.c3 { border-color: var(--rose); }
+.bar { height: 10px; border-radius: 3px; background: var(--accent); }
+.stackbar { display: flex; height: 22px; border-radius: 5px; overflow: hidden; border: 1px solid var(--line); }
+.stackbar > div { height: 100%; }
+.legend { display: flex; flex-wrap: wrap; gap: 6px 16px; font: 500 12px var(--mono); color: var(--muted); }
+.legend i { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 6px; vertical-align: -1px; }
+
+/* pipeline diagram */
+.flow { display: flex; flex-wrap: wrap; gap: 8px; align-items: stretch; }
+.flow .stg { flex: 1 1 130px; min-width: 120px; text-align: left; border: 1px solid var(--line); border-radius: 8px; background: var(--bg); padding: 9px 11px; cursor: pointer; }
+.flow .stg:hover { border-color: var(--accent); }
+.flow .stg[aria-pressed="true"] { border-color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent); }
+.flow .stg b { display: block; font: 700 13px var(--display); }
+.flow .stg span { font: 500 12px var(--mono); color: var(--muted); }
+
+/* math */
+.eq { display: block; font: 400 1.08em/1.9 var(--serif); padding: 10px 16px; margin: 10px 0; background: var(--surface-2); border-radius: 6px; overflow-x: auto; white-space: nowrap; max-width: 100%; }
+.eq var, .m var { font-style: italic; }
+.fn { font-style: normal; }
+.frac { display: inline-flex; flex-direction: column; vertical-align: middle; text-align: center; margin: 0 3px; line-height: 1.25; }
+.frac > span:first-child { border-bottom: 1px solid currentColor; padding: 0 4px 1px; }
+.frac > span:last-child { padding: 1px 4px 0; }
+details.math, details.refresh { border: 1px solid var(--line); border-radius: 8px; background: var(--surface); margin: 18px 0; max-width: 100%; }
+details.refresh { border-style: dashed; }
+details > summary { cursor: pointer; padding: 11px 15px; font: 700 14px var(--display); list-style: none; display: flex; gap: 10px; align-items: center; }
+details > summary::-webkit-details-marker { display: none; }
+details > summary::before { content: "+"; font: 500 16px var(--mono); color: var(--accent); width: 1ch; }
+details[open] > summary::before { content: "−"; }
+details > summary small { font: 500 11px var(--mono); color: var(--muted); text-transform: uppercase; letter-spacing: 0.08em; margin-left: auto; }
+.dbody { padding: 0 18px 14px; }
+.note { border: 1px dashed var(--line); border-radius: 8px; background: var(--surface); padding: 10px 14px; font-size: 0.93em; max-width: 68ch; margin: 14px 0; }
+.note b:first-child { font: 700 11px var(--display); text-transform: uppercase; letter-spacing: 0.09em; color: var(--amber); margin-right: 6px; }
+
+/* quiz */
+.quiz { display: flex; flex-direction: column; gap: 16px; max-width: 70ch; }
+.q p { margin: 0 0 8px; }
+.opt { display: block; width: 100%; text-align: left; padding: 8px 12px; margin: 0 0 6px; background: var(--surface); border: 1px solid var(--line); border-radius: 6px; cursor: pointer; font-size: 0.95em; }
+.opt:hover:not(:disabled) { border-color: var(--accent); }
+.opt:disabled { cursor: default; color: inherit; }
+.opt.right { border-color: var(--teal); background: color-mix(in srgb, var(--teal) 16%, var(--surface)); }
+.opt.wrong { border-color: var(--rose); background: color-mix(in srgb, var(--rose) 14%, var(--surface)); }
+.why { font-size: 0.93em; color: var(--muted); margin: 4px 0 0; }
+.next { display: flex; justify-content: space-between; gap: 12px; margin-top: 36px; padding-top: 18px; border-top: 1px solid var(--line); }
+
+/* node graph (backprop) */
+.graph { display: flex; flex-wrap: wrap; gap: 8px; align-items: stretch; }
+.gn { flex: 1 1 100px; border: 1px solid var(--line); border-radius: 8px; background: var(--bg); padding: 8px 10px; font: 500 12px/1.5 var(--mono); }
+.gn b { display: block; font: 700 12px var(--display); margin-bottom: 4px; }
+.gn .f { color: var(--accent); } .gn .g { color: var(--rose); }
+
+@media (max-width: 880px) {
+  .shell { grid-template-columns: minmax(0, 1fr); gap: 0; }
+  .rail {
+    max-height: none; flex-direction: row; align-items: center; gap: 10px; overflow-x: auto; overflow-y: hidden;
+    padding: 8px 0; background: var(--bg); border-bottom: 1px solid var(--line); z-index: 5;
+  }
+  .brand { font-size: 20px; flex: none; } .tag, .roadmap, .layers-label, .theme-row { display: none; }
+  .stack { flex-direction: row; gap: 4px; }
+  .layers { flex-direction: row; margin: 0; padding: 0 0 0 6px; border-left: 2px solid var(--accent); gap: 4px; }
+  .node { padding: 6px 9px; width: auto; white-space: nowrap; }
+  .node .seen { display: none; }
+  .stage { padding-top: 20px; }
+  .module h2 { margin-top: 32px; }
+}
+@media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } * { transition: none !important; animation: none !important; } }
+
+/* small editable matrices */
+.mat { display: inline-flex; flex-direction: column; gap: 4px; }
+.mat .mname { font: 700 12px var(--display); color: var(--muted); }
+.mgrid { display: grid; grid-template-columns: repeat(2, 5em); gap: 4px; padding: 4px 8px; border-left: 2px solid var(--ink); border-right: 2px solid var(--ink); border-radius: 4px; }
+.mgrid input { width: 100%; padding: 4px 6px; text-align: right; }
+.mats { display: flex; flex-wrap: wrap; gap: 18px 28px; align-items: flex-end; }
+
+</style>
+<div class="shell">
+  <nav class="rail" id="rail" aria-label="Moduli"></nav>
+  <main class="stage" id="stage"></main>
+</div>
+<script>
+'use strict';
+/* LLM Lab - shared helpers: DOM, theme-aware canvas, charts, 3D camera, math, quiz. */
+const LAB = { modules: [], redraws: new Set(), uid: 0, tests: {} };
+
+/* ---------- DOM ---------- */
+const $ = (s, r = document) => r.querySelector(s);
+const $$ = (s, r = document) => [...r.querySelectorAll(s)];
+function el(tag, attrs, ...kids) {
+  const e = document.createElement(tag);
+  if (attrs) for (const [k, v] of Object.entries(attrs)) {
+    if (v === false || v == null) continue;
+    if (k === 'class') e.className = v;
+    else if (k === 'html') e.innerHTML = v;
+    else if (k === 'text') e.textContent = v;
+    else if (k.startsWith('on')) e.addEventListener(k.slice(2), v);
+    else if (v === true) e.setAttribute(k, '');
+    else e.setAttribute(k, v);
+  }
+  for (const c of kids.flat()) if (c != null) e.append(c.nodeType ? c : document.createTextNode(String(c)));
+  return e;
+}
+const uid = (p = 'c') => p + (++LAB.uid);
+const f2 = (x, d = 2) => { const s = Number(x).toFixed(d); return /^-0\.?0*$/.test(s) ? s.slice(1) : s; };
+const nfmt = v => { const a = Math.abs(v); if (a === 0) return '0'; if (a >= 10000 || a < 0.01) return v.toExponential(0).replace('e+', 'e'); return String(+v.toFixed(a < 1 ? 2 : a < 100 ? 1 : 0)); };
+const clamp = (x, a, b) => Math.max(a, Math.min(b, x));
+const sum = a => a.reduce((s, x) => s + x, 0);
+const range = n => Array.from({ length: n }, (_, i) => i);
+const human = n => { const a = Math.abs(n); if (a >= 1e12) return (n / 1e12).toFixed(2) + ' T'; if (a >= 1e9) return (n / 1e9).toFixed(2) + ' B'; if (a >= 1e6) return (n / 1e6).toFixed(1) + ' M'; if (a >= 1e3) return (n / 1e3).toFixed(1) + ' k'; return String(Math.round(n)); };
+
+/* ---------- theme ---------- */
+function theme() {
+  const s = getComputedStyle(document.documentElement), g = n => (s.getPropertyValue(n) || '').trim() || '#888888';
+  return { bg: g('--bg'), surface: g('--surface'), surface2: g('--surface-2'), ink: g('--ink'), muted: g('--muted'), line: g('--line'),
+    accent: g('--accent'), amber: g('--amber'), teal: g('--teal'), rose: g('--rose') };
+}
+const MONO = "'IBM Plex Mono', ui-monospace, Menlo, monospace", SANS = "'Archivo', 'Helvetica Neue', Arial, sans-serif";
+function onTheme(fn) { LAB.redraws.add(fn); }
+function fireTheme() { LAB.redraws.forEach(fn => { try { fn(); } catch (e) { console.error(e); } }); }
+if (window.matchMedia) window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', fireTheme);
+new MutationObserver(fireTheme).observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
+
+const hex = c => { const m = /^#?([0-9a-f]{6})$/i.exec(c.trim()); const n = m ? parseInt(m[1], 16) : 0x888888; return [n >> 16 & 255, n >> 8 & 255, n & 255]; };
+const rgba = (c, a) => { const [r, g, b] = hex(c); return `rgba(${r},${g},${b},${clamp(a, 0, 1)})`; };
+const mixc = (c1, c2, t) => { const a = hex(c1), b = hex(c2); return `rgb(${a.map((v, i) => Math.round(v + (b[i] - v) * t)).join(',')})`; };
+
+/* ---------- canvas ---------- */
+function setupCanvas(canvas, draw) {
+  const ctx = canvas.getContext('2d');
+  const o = { canvas, ctx, w: 0, h: 0 };
+  o.fit = () => {
+    const r = canvas.getBoundingClientRect(), dpr = window.devicePixelRatio || 1;
+    o.w = r.width; o.h = r.height;
+    canvas.width = Math.max(1, Math.round(r.width * dpr)); canvas.height = Math.max(1, Math.round(r.height * dpr));
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  };
+  o.redraw = () => {
+    if (!o.w) o.fit();
+    if (!o.w) return;
+    ctx.clearRect(0, 0, o.w, o.h);
+    draw(ctx, o.w, o.h, theme());
+  };
+  o.visible = () => canvas.offsetParent !== null || canvas.getClientRects().length > 0;
+  if (window.ResizeObserver) new ResizeObserver(() => { o.fit(); o.redraw(); }).observe(canvas);
+  else window.addEventListener('resize', () => { o.fit(); o.redraw(); });
+  onTheme(o.redraw);
+  return o;
+}
+function canvasEl(h = 280, cls = '') { const c = el('canvas', { class: 'cv ' + cls }); c.style.height = h + 'px'; return c; }
+
+function arrow(ctx, x0, y0, x1, y1, color, w = 2, head = 8) {
+  const a = Math.atan2(y1 - y0, x1 - x0);
+  ctx.save(); ctx.strokeStyle = color; ctx.fillStyle = color; ctx.lineWidth = w;
+  ctx.beginPath(); ctx.moveTo(x0, y0); ctx.lineTo(x1 - Math.cos(a) * head * 0.6, y1 - Math.sin(a) * head * 0.6); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(x1, y1);
+  ctx.lineTo(x1 - head * Math.cos(a - 0.4), y1 - head * Math.sin(a - 0.4));
+  ctx.lineTo(x1 - head * Math.cos(a + 0.4), y1 - head * Math.sin(a + 0.4)); ctx.closePath(); ctx.fill(); ctx.restore();
+}
+function text(ctx, s, x, y, o = {}) {
+  ctx.save(); ctx.font = `${o.weight || 500} ${o.size || 12}px ${o.sans ? SANS : MONO}`; ctx.fillStyle = o.color || '#888';
+  ctx.textAlign = o.align || 'left'; ctx.textBaseline = o.base || 'alphabetic'; ctx.fillText(s, x, y); ctx.restore();
+}
+
+/* generic line chart. series: [{xs, ys, color, dash, lw, label}] */
+function chart(ctx, w, h, t, series, o = {}) {
+  const pad = { l: o.padL ?? 46, r: o.padR ?? 14, t: o.padT ?? 14, b: o.padB ?? 32 };
+  const x0 = pad.l, x1 = w - pad.r, y0 = h - pad.b, y1 = pad.t;
+  const ally = series.flatMap(s => s.ys.filter(Number.isFinite)), allx = series.flatMap(s => s.xs);
+  let xmin = o.xmin ?? Math.min(...allx), xmax = o.xmax ?? Math.max(...allx);
+  let ymin = o.ymin ?? Math.min(...ally), ymax = o.ymax ?? Math.max(...ally);
+  if (!Number.isFinite(ymin)) { ymin = 0; ymax = 1; }
+  if (xmax === xmin) xmax = xmin + 1; if (ymax === ymin) ymax = ymin + 1;
+  const X = v => x0 + (v - xmin) / (xmax - xmin) * (x1 - x0), Y = v => y0 - (v - ymin) / (ymax - ymin) * (y0 - y1);
+  ctx.save(); ctx.font = `11px ${MONO}`; ctx.lineWidth = 1;
+  const nx = o.nx ?? 5, ny = o.ny ?? 4, yf = o.yfmt || nfmt, xf = o.xfmt || nfmt;
+  for (let i = 0; i <= ny; i++) {
+    const v = ymin + (ymax - ymin) * i / ny, y = Y(v);
+    ctx.strokeStyle = rgba(t.line, 0.7); ctx.beginPath(); ctx.moveTo(x0, y); ctx.lineTo(x1, y); ctx.stroke();
+    ctx.fillStyle = t.muted; ctx.textAlign = 'right'; ctx.textBaseline = 'middle'; ctx.fillText(yf(v), x0 - 6, y);
+  }
+  for (let i = 0; i <= nx; i++) {
+    const v = xmin + (xmax - xmin) * i / nx, x = X(v);
+    ctx.fillStyle = t.muted; ctx.textAlign = 'center'; ctx.textBaseline = 'top'; ctx.fillText(xf(v), x, y0 + 6);
+  }
+  ctx.strokeStyle = t.muted; ctx.beginPath(); ctx.moveTo(x0, y1); ctx.lineTo(x0, y0); ctx.lineTo(x1, y0); ctx.stroke();
+  if (o.xlabel) text(ctx, o.xlabel, (x0 + x1) / 2, h - 3, { color: t.muted, align: 'center', size: 11 });
+  if (o.ylabel) { ctx.save(); ctx.translate(11, (y0 + y1) / 2); ctx.rotate(-Math.PI / 2); text(ctx, o.ylabel, 0, 0, { color: t.muted, align: 'center', size: 11 }); ctx.restore(); }
+  ctx.beginPath(); ctx.rect(x0, y1 - 2, x1 - x0, y0 - y1 + 4); ctx.clip();
+  for (const s of series) {
+    ctx.strokeStyle = s.color; ctx.lineWidth = s.lw || 2; ctx.setLineDash(s.dash || []); ctx.beginPath();
+    let on = false;
+    s.xs.forEach((xv, i) => { const yv = s.ys[i]; if (!Number.isFinite(yv)) { on = false; return; } const px = X(xv), py = Y(yv); if (on) ctx.lineTo(px, py); else ctx.moveTo(px, py); on = true; });
+    ctx.stroke(); ctx.setLineDash([]);
+    if (s.dots) s.xs.forEach((xv, i) => { ctx.fillStyle = s.color; ctx.beginPath(); ctx.arc(X(xv), Y(s.ys[i]), 3, 0, 7); ctx.fill(); });
+  }
+  ctx.restore();
+  let lx = x0 + 10;
+  series.forEach(s => {
+    if (!s.label) return;
+    ctx.save(); ctx.strokeStyle = s.color; ctx.lineWidth = 2; ctx.setLineDash(s.dash || []); ctx.beginPath(); ctx.moveTo(lx, y1 + 9); ctx.lineTo(lx + 18, y1 + 9); ctx.stroke(); ctx.restore();
+    text(ctx, s.label, lx + 23, y1 + 13, { color: t.ink, size: 11 }); lx += 32 + s.label.length * 6.6;
+  });
+  return { X, Y, x0, x1, y0, y1 };
+}
+
+/* heatmap with optional labels and numbers */
+function heat(ctx, M, x, y, cw, ch, o = {}) {
+  const R = M.length, C = M[0].length, flat = M.flat().filter(Number.isFinite);
+  const vmin = o.vmin ?? Math.min(...flat), vmax = o.vmax ?? Math.max(...flat), t = o.t;
+  const m = Math.max(Math.abs(vmin), Math.abs(vmax)) || 1;
+  for (let i = 0; i < R; i++) for (let j = 0; j < C; j++) {
+    const v = M[i][j];
+    ctx.fillStyle = t.surface2; ctx.fillRect(x + j * cw, y + i * ch, cw - 1, ch - 1);
+    if (!Number.isFinite(v)) { ctx.strokeStyle = t.line; ctx.beginPath(); ctx.moveTo(x + j * cw + 3, y + i * ch + 3); ctx.lineTo(x + (j + 1) * cw - 4, y + (i + 1) * ch - 4); ctx.stroke(); if (o.num && cw > 26 && v === -Infinity) text(ctx, '−∞', x + j * cw + cw / 2, y + i * ch + ch / 2 + 4, { align: 'center', size: 11, color: t.muted }); continue; }
+    let u;
+    if (o.diverging) { u = v / m; ctx.fillStyle = rgba(u >= 0 ? t.accent : t.rose, Math.abs(u) * 0.95); }
+    else { u = (v - vmin) / ((vmax - vmin) || 1); ctx.fillStyle = rgba(o.color || t.accent, u * 0.95); }
+    ctx.fillRect(x + j * cw, y + i * ch, cw - 1, ch - 1);
+    if (o.num && cw > 26) text(ctx, (o.numFmt || (q => f2(q, 2)))(v), x + j * cw + cw / 2, y + i * ch + ch / 2 + 4, { align: 'center', size: Math.min(11, cw / 3.2), color: Math.abs(u) > 0.55 ? (o.diverging || o.color ? '#fff' : '#fff') : t.ink });
+  }
+  if (o.rows) o.rows.forEach((s, i) => text(ctx, s, x - 6, y + i * ch + ch / 2 + 4, { align: 'right', color: o.hi === i ? t.accent : t.muted, size: 11, weight: o.hi === i ? 700 : 500 }));
+  if (o.cols) o.cols.forEach((s, j) => text(ctx, s, x + j * cw + cw / 2, y - 6, { align: 'center', color: t.muted, size: 11 }));
+}
+
+/* ---------- 3D camera (drag to orbit) ---------- */
+class Cam3D {
+  constructor(cv, redraw, o = {}) {
+    this.yaw = o.yaw ?? 0.7; this.pitch = o.pitch ?? 0.5; this.redraw = redraw;
+    let drag = null; cv.style.touchAction = 'none'; cv.style.cursor = 'grab';
+    cv.addEventListener('pointerdown', e => { drag = { x: e.clientX, y: e.clientY, moved: false }; cv.setPointerCapture(e.pointerId); cv.style.cursor = 'grabbing'; });
+    cv.addEventListener('pointermove', e => {
+      if (!drag) return;
+      const dx = e.clientX - drag.x, dy = e.clientY - drag.y; if (Math.abs(dx) + Math.abs(dy) > 2) drag.moved = true;
+      this.yaw += dx * 0.01; this.pitch = clamp(this.pitch + dy * 0.01, -1.5, 1.5); drag.x = e.clientX; drag.y = e.clientY; redraw();
+    });
+    const end = () => { this.wasDrag = drag && drag.moved; drag = null; cv.style.cursor = 'grab'; };
+    cv.addEventListener('pointerup', end); cv.addEventListener('pointercancel', end);
+  }
+  project(x, y, z, w, h, s) {
+    const cy = Math.cos(this.yaw), sy = Math.sin(this.yaw), cp = Math.cos(this.pitch), sp = Math.sin(this.pitch);
+    const x1 = x * cy + z * sy, z1 = -x * sy + z * cy, y1 = y * cp - z1 * sp, z2 = y * sp + z1 * cp;
+    const k = 1 / (1 - z2 * 0.16), sc = s * k;
+    return [w / 2 + x1 * sc, h / 2 - y1 * sc, z2];
+  }
+}
+
+/* ---------- random ---------- */
+function rng(seed) {
+  let a = seed >>> 0;
+  const r = () => { a = (a + 0x6D2B79F5) | 0; let t = Math.imul(a ^ (a >>> 15), 1 | a); t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t; return ((t ^ (t >>> 14)) >>> 0) / 4294967296; };
+  r.gauss = () => { let u = 0; while (!u) u = r(); return Math.sqrt(-2 * Math.log(u)) * Math.cos(2 * Math.PI * r()); };
+  return r;
+}
+
+/* ---------- linear algebra (arrays of arrays) ---------- */
+const MX = {
+  zeros: (r, c) => Array.from({ length: r }, () => new Array(c).fill(0)),
+  mul(A, B) { const n = A.length, k = B.length, m = B[0].length, C = MX.zeros(n, m); for (let i = 0; i < n; i++) for (let p = 0; p < k; p++) { const a = A[i][p]; if (a) for (let j = 0; j < m; j++) C[i][j] += a * B[p][j]; } return C; },
+  T: A => A[0].map((_, j) => A.map(r => r[j])),
+  map: (A, f) => A.map(r => r.map(f)),
+  add: (A, B) => A.map((r, i) => r.map((v, j) => v + B[i][j])),
+};
+function softmax(z, T = 1) {
+  const m = Math.max(...z); if (!Number.isFinite(m)) return z.map(() => 1 / z.length);
+  const e = z.map(x => Math.exp((x - m) / T)), s = sum(e); return e.map(x => x / s);
+}
+const dot = (a, b) => a.reduce((s, x, i) => s + x * b[i], 0);
+const norm = a => Math.sqrt(dot(a, a));
+const cosine = (a, b) => dot(a, b) / ((norm(a) * norm(b)) || 1);
+const entropy = p => -sum(p.map(x => x > 0 ? x * Math.log(x) : 0));
+/* single-head scaled dot-product attention. mask: true = causal */
+function attention(X, Wq, Wk, Wv, causal = false) {
+  const Q = MX.mul(X, Wq), K = MX.mul(X, Wk), V = MX.mul(X, Wv), d = Wq[0].length, T = X.length;
+  const S = MX.mul(Q, MX.T(K)).map(r => r.map(v => v / Math.sqrt(d)));
+  const A = S.map((r, i) => softmax(r.map((v, j) => causal && j > i ? -Infinity : v)));
+  return { Q, K, V, S, A, Z: MX.mul(A, V) };
+}
+function pca(X, k = 3) {
+  const n = X.length, d = X[0].length, mu = range(d).map(j => sum(X.map(r => r[j])) / n);
+  let C = X.map(r => r.map((v, j) => v - mu[j]));
+  const cov = MX.mul(MX.T(C), C).map(r => r.map(v => v / n)), comps = [], r = rng(7);
+  for (let c = 0; c < k; c++) {
+    let v = range(d).map(() => r() - 0.5);
+    for (let it = 0; it < 200; it++) { const w = cov.map(row => dot(row, v)); const nw = norm(w) || 1; v = w.map(x => x / nw); }
+    const lam = dot(cov.map(row => dot(row, v)), v); comps.push(v);
+    for (let i = 0; i < d; i++) for (let j = 0; j < d; j++) cov[i][j] -= lam * v[i] * v[j];
+  }
+  return { mu, comps, proj: C.map(row => comps.map(v => dot(row, v))) };
+}
+
+/* ---------- controls ---------- */
+function slider(o) {
+  const { label, min, max, step = 1, value, fmt = v => String(v), onInput } = o, id = o.id || uid('s');
+  const inp = el('input', { type: 'range', min, max, step, value, id }), out = el('output', { text: fmt(+value), for: id });
+  const root = el('label', { class: 'ctl', for: id }, el('span', { class: 'ctl-l', text: label }), inp, out);
+  inp.addEventListener('input', () => { out.textContent = fmt(+inp.value); if (onInput) onInput(+inp.value); });
+  return { el: root, input: inp, get: () => +inp.value, set: v => { inp.value = v; out.textContent = fmt(+inp.value); } };
+}
+function button(label, onclick, cls = '') { return el('button', { class: 'btn ' + cls, type: 'button', onclick, text: label }); }
+function select(opts, value, onchange, label) {
+  const id = uid('sel'), s = el('select', { id }, opts.map(([v, t]) => el('option', { value: v, text: t })));
+  s.value = value; s.addEventListener('change', () => onchange(s.value));
+  return label ? el('label', { class: 'ctl', for: id }, el('span', { class: 'ctl-l', text: label }), s) : s;
+}
+function checkbox(label, checked, onchange) {
+  const id = uid('chk'), i = el('input', { type: 'checkbox', id }); i.checked = checked; i.addEventListener('change', () => onchange(i.checked));
+  return el('label', { class: 'chk', for: id }, i, label);
+}
+function lab(title, ...kids) { return el('section', { class: 'lab' }, el('div', { class: 'lab-title', text: title }), ...kids); }
+function controls(...kids) { return el('div', { class: 'controls' }, ...kids); }
+function math(html) { return el('div', { class: 'eq', html }); }
+function details(kind, title, tag, html) {
+  const d = el('details', { class: kind }, el('summary', {}, title, tag ? el('small', { text: tag }) : null), el('div', { class: 'dbody', html }));
+  return d;
+}
+const frac = (n, d) => `<span class="frac"><span>${n}</span><span>${d}</span></span>`;
+
+function quiz(items) {
+  const root = el('div', { class: 'quiz' });
+  items.forEach((it, i) => {
+    const q = el('div', { class: 'q' }, el('p', { html: `<b>${i + 1}.</b> ${it.q}` }));
+    const why = el('p', { class: 'why', html: it.why, hidden: true });
+    const opts = it.opts.map((t, j) => {
+      const b = el('button', { class: 'opt', type: 'button', html: t });
+      b.addEventListener('click', () => {
+        if (q.dataset.done) return; q.dataset.done = '1';
+        opts.forEach((o, k) => { o.disabled = true; if (k === it.ans) o.classList.add('right'); else if (k === j) o.classList.add('wrong'); });
+        why.hidden = false;
+      });
+      return b;
+    });
+    q.append(...opts, why); root.append(q);
+  });
+  return root;
+}
+
+/* ---------- animation loop helper (pauses when canvas hidden) ---------- */
+function loop(cv, fn) {
+  let id = 0, on = false;
+  const tick = () => { if (!on) return; if (cv.offsetParent === null) { id = requestAnimationFrame(tick); return; } fn(); id = requestAnimationFrame(tick); };
+  return { start() { if (!on) { on = true; id = requestAnimationFrame(tick); } }, stop() { on = false; cancelAnimationFrame(id); }, get running() { return on; } };
+}
+
+function registerModule(m) { LAB.modules.push(m); LAB.modules.sort((a, b) => a.n - b.n); }
+
+'use strict';
+/* Module 0 - the pipeline and the parameter budget */
+function paramCount(P) {
+  const emb = P.V * P.d, pos = P.ctx * P.d, unemb = P.tie ? 0 : P.V * P.d;
+  const attn = P.L * 4 * P.d * P.d, mlp = P.L * (P.glu === 'swiglu' ? 3 : 2) * P.d * P.hid, norms = P.L * 4 * P.d + 2 * P.d;
+  return { emb, pos, unemb, attn, mlp, norms, N: emb + pos + unemb + attn + mlp + norms };
+}
+LAB.tests.paramCount = paramCount;
+registerModule({
+  id: 'm0', n: 0, title: 'La pipeline', eyebrow: 'panoramica', heading: 'Una funzione che prevede il token successivo',
+  lede: 'Un LLM prende una sequenza di numeri interi e restituisce una distribuzione di probabilità sul prossimo intero. Tutto il resto è il modo in cui questa funzione è costruita e il modo in cui i suoi parametri vengono trovati.',
+  build(root) {
+    root.append(el('div', { html: `
+      <p>Ogni modulo di questo laboratorio zooma su un pezzo di una catena che, vista da lontano, è sorprendentemente corta:
+      il testo diventa <b>token</b> (interi), i token diventano <b>vettori</b> (embedding), una pila di identici <b>blocchi transformer</b> li rimescola,
+      e alla fine un vettore per posizione viene trasformato in una <b>distribuzione di probabilità</b> sul vocabolario.
+      Si sceglie un token, lo si aggiunge alla sequenza e si ripete: questo ciclo si chiama <i>generazione autoregressiva</i>.</p>
+      <p>Prima di entrare nei dettagli, qui sotto trovi la mappa completa con le <b>forme dei tensori</b> in ogni punto.
+      Capire le forme è metà della battaglia: quando una formula ti sembra oscura, chiediti sempre quanto è grande ogni oggetto.</p>` }));
+
+    /* ---- Lab A: shapes ---- */
+    const st = { T: 6, d: 768, L: 12, V: 50257 };
+    const stages = [
+      { k: 'Testo', s: () => '"il gatto dorme"', d: 'Una stringa di caratteri. Il modello non la vede mai direttamente: lavora solo con numeri.' },
+      { k: 'Tokenizer', s: () => `[T] = [${st.T}]`, d: 'Spezza il testo in pezzi (<i>token</i>) presi da un vocabolario fisso e restituisce l\'indice di ogni pezzo. È un passaggio deterministico, senza apprendimento (modulo 1).' },
+      { k: 'Embedding', s: () => `[T, d] = [${st.T}, ${st.d}]`, d: 'Ogni indice seleziona una riga di una matrice <var>E</var> di forma <var>V</var>×<var>d</var>. Da qui in poi ogni token è un vettore (modulo 2).' },
+      { k: 'Posizioni', s: () => `[T, d] = [${st.T}, ${st.d}]`, d: 'Si inietta l\'informazione sull\'ordine, perché l\'attention da sola non distingue "gatto mangia pesce" da "pesce mangia gatto" (modulo 3). Nei modelli moderni avviene dentro l\'attention (RoPE).' },
+      { k: 'Blocchi transformer', s: () => `[T, d] → [T, d]`, d: 'Ogni blocco contiene attention (i token si scambiano informazione) e MLP (ogni token elabora per conto suo), con residual e normalizzazione. <b>La forma non cambia mai</b>: è questo che permette di impilare quanti blocchi si vuole (moduli 4-6).' },
+      { k: 'Logits', s: () => `[T, V] = [${st.T}, ${human(st.V)}]`, d: 'Una norma finale e poi una proiezione lineare da <var>d</var> a <var>V</var>: un punteggio (<i>logit</i>) per ogni token del vocabolario, in ogni posizione. Spesso la matrice è la stessa dell\'embedding, trasposta (<i>weight tying</i>).' },
+      { k: 'Softmax', s: () => `[V] = [${human(st.V)}]`, d: 'Per generare serve solo l\'<b>ultima</b> posizione. La softmax trasforma i logit in probabilità che sommano a 1 (modulo 7).' },
+      { k: 'Sampling', s: () => '1 intero', d: 'Si estrae un token (greedy, temperatura, top-k, top-p...). Viene accodato alla sequenza e il ciclo riparte con <var>T</var>+1. In training invece si confrontano le probabilità con il token vero (modulo 8).' },
+    ];
+    let sel = 2;
+    const info = el('p', { class: 'readout' }), flow = el('div', { class: 'flow' });
+    const renderFlow = () => {
+      flow.replaceChildren(...stages.map((s, i) => {
+        const b = el('button', { class: 'stg', type: 'button', 'aria-pressed': String(i === sel), onclick: () => { sel = i; renderFlow(); } },
+          el('b', { text: i === 4 ? `Blocchi × ${st.L}` : s.k }), el('span', { text: s.s() }));
+        return b;
+      }));
+      info.innerHTML = `<b>${stages[sel].k}</b> · ${stages[sel].d}`;
+    };
+    const cT = slider({ label: 'T (token)', min: 1, max: 64, value: st.T, onInput: v => { st.T = v; renderFlow(); } });
+    const cd = slider({ label: 'd (modello)', min: 64, max: 4096, step: 64, value: st.d, onInput: v => { st.d = v; renderFlow(); } });
+    const cL = slider({ label: 'L (layer)', min: 1, max: 96, value: st.L, onInput: v => { st.L = v; renderFlow(); } });
+    const cV = slider({ label: 'V (vocab)', min: 1000, max: 200000, step: 1000, value: st.V, fmt: human, onInput: v => { st.V = v; renderFlow(); } });
+    renderFlow();
+    root.append(lab('Laboratorio · il viaggio di una sequenza', controls(cT.el, cd.el, cL.el, cV.el), flow, info));
+
+    /* ---- Lab B: parameter calculator ---- */
+    root.append(el('h2', { text: 'Dove vivono i parametri' }));
+    root.append(el('p', { html: 'Un modello "da 7 miliardi" ha 7 miliardi di numeri da imparare. Quasi tutti stanno in <b>quattro</b> famiglie di matrici. Muovi i parametri architetturali per vedere come si ripartiscono, oppure parti da un preset.' }));
+    const P = { d: 768, L: 12, h: 12, hid: 3072, V: 50257, ctx: 1024, glu: 'classic', tie: true, bytes: 2 };
+    const bars = el('div', { class: 'stackbar' }), legend = el('div', { class: 'legend' }), out = el('div', { class: 'readout' });
+    const sd = slider({ label: 'd_model', min: 64, max: 8192, step: 64, value: P.d, onInput: v => { P.d = v; calc(); } });
+    const sL = slider({ label: 'layer', min: 1, max: 96, value: P.L, onInput: v => { P.L = v; calc(); } });
+    const sh = slider({ label: 'head', min: 1, max: 64, value: P.h, onInput: v => { P.h = v; calc(); } });
+    const sf = slider({ label: 'ffn hidden', min: 64, max: 32768, step: 64, value: P.hid, onInput: v => { P.hid = v; calc(); } });
+    const sv = slider({ label: 'vocab', min: 1000, max: 260000, step: 1000, value: P.V, fmt: human, onInput: v => { P.V = v; calc(); } });
+    const sc = slider({ label: 'posizioni apprese', min: 0, max: 8192, step: 128, value: P.ctx, onInput: v => { P.ctx = v; calc(); } });
+    const gluSel = select([['classic', 'MLP classica (2 matrici)'], ['swiglu', 'SwiGLU (3 matrici)']], P.glu, v => { P.glu = v; calc(); }, 'MLP');
+    const byteSel = select([['4', 'fp32'], ['2', 'fp16 / bf16'], ['1', 'int8'], ['0.5', 'int4']], '2', v => { P.bytes = +v; calc(); }, 'precisione');
+    const tie = checkbox('weight tying (embedding = unembedding)', P.tie, v => { P.tie = v; calc(); });
+    const presets = {
+      'GPT-2 small': { d: 768, L: 12, h: 12, hid: 3072, V: 50257, ctx: 1024, glu: 'classic', tie: true },
+      'GPT-2 XL': { d: 1600, L: 48, h: 25, hid: 6400, V: 50257, ctx: 1024, glu: 'classic', tie: true },
+      'Stile Llama 7B': { d: 4096, L: 32, h: 32, hid: 11008, V: 32000, ctx: 0, glu: 'swiglu', tie: false },
+      'Mini didattico': { d: 128, L: 4, h: 4, hid: 512, V: 8000, ctx: 256, glu: 'classic', tie: true },
+    };
+    const setP = p => { Object.assign(P, p); sd.set(P.d); sL.set(P.L); sh.set(P.h); sf.set(P.hid); sv.set(P.V); sc.set(P.ctx); gluSel.querySelector('select').value = P.glu; tie.querySelector('input').checked = P.tie; calc(); };
+    function calc() {
+      const { emb, pos, unemb, attn, mlp, norms, N } = paramCount(P);
+      const parts = [['Embedding' + (P.tie ? '' : ' + unembedding'), emb + unemb + pos, 'var(--amber)'], ['Attention (Wq, Wk, Wv, Wo)', attn, 'var(--accent)'], ['MLP', mlp, 'var(--teal)'], ['Norm', norms, 'var(--rose)']];
+      bars.replaceChildren(...parts.map(([n, v, c]) => el('div', { style: `width:${Math.max(0.4, v / N * 100)}%;background:${c}`, title: n })));
+      legend.replaceChildren(...parts.map(([n, v, c]) => el('span', { html: `<i style="background:${c}"></i>${n}: ${human(v)} (${(v / N * 100).toFixed(1)}%)` })));
+      const dh = P.d / P.h, ok = Number.isInteger(dh);
+      const D = 20 * N, C = 6 * N * D;
+      out.innerHTML = `Parametri totali <b>${human(N)}</b> (${N.toLocaleString('it-IT')})<br>` +
+        `Dimensione per head <b>d_head = ${ok ? dh : '— (d non divisibile per h)'}</b><br>` +
+        `Memoria dei soli pesi a ${P.bytes * 8} bit: <b>${(N * P.bytes / 1e9).toFixed(2)} GB</b><br>` +
+        `Inferenza ≈ 2·N = <b>${human(2 * N)} FLOP</b> per token<br>` +
+        `Training con D = 20·N token: ≈ 6·N·D = <b>${(C).toExponential(1)} FLOP</b>`;
+    }
+    const presetRow = controls(...Object.keys(presets).map(k => button(k, () => setP(presets[k]))));
+    root.append(lab('Laboratorio · calcolatore di parametri', presetRow,
+      controls(sd.el, sL.el, sh.el, sf.el), controls(sv.el, sc.el, gluSel, byteSel), tie, bars, legend, out));
+    calc();
+    root.append(el('p', { html: 'Nota che <b>il numero di head non cambia il numero di parametri</b>: cambia solo come i <var>d</var> canali vengono suddivisi (modulo 5). E che l\'MLP pesa circa il doppio dell\'attention: i "fatti" del modello vivono soprattutto lì.' }));
+
+    root.append(details('math', 'La matematica: contare i parametri', 'formule', `
+      <p>Per un transformer decoder-only con <var>L</var> layer, dimensione <var>d</var>, vocabolario <var>V</var> e MLP con dimensione nascosta <var>d</var><sub>ff</sub>:</p>
+      <span class="eq"><var>N</var> ≈ <var>V</var>·<var>d</var> &nbsp;+&nbsp; <var>L</var>·( 4<var>d</var>² &nbsp;+&nbsp; 2<var>d</var>·<var>d</var><sub>ff</sub> ) &nbsp;+&nbsp; (<var>V</var>·<var>d</var> se non c'è weight tying)</span>
+      <p>Il termine <b>4<var>d</var>²</b> sono le quattro matrici <var>W</var><sub>Q</sub>, <var>W</var><sub>K</sub>, <var>W</var><sub>V</sub>, <var>W</var><sub>O</sub> (ognuna <var>d</var>×<var>d</var>). Con <var>d</var><sub>ff</sub> = 4<var>d</var> l'MLP vale 8<var>d</var>², quindi ogni layer pesa circa <b>12<var>d</var>²</b>.
+      Per GPT-2 small: 12·768² ≈ 7,08 M per layer, ×12 layer ≈ 85 M, più 38,6 M di embedding: circa 124 M.</p>
+      <p>Per un conto più preciso mancano bias, qualche vettore di normalizzazione e, nei modelli moderni, le matrici K e V ridotte del <i>grouped-query attention</i>.</p>
+      <p>Regola empirica dei costi: l'inferenza costa circa <b>2<var>N</var></b> FLOP per token (ogni parametro partecipa a una moltiplicazione e a una somma), il training circa <b>6<var>N</var></b> FLOP per token (forward + backward).</p>`));
+    root.append(el('h2', { text: 'Verifica rapida' }));
+    root.append(quiz([
+      { q: 'Quale parte della pipeline <b>non</b> cambia la forma <var>[T, d]</var> dell\'input?', opts: ['Il blocco transformer (attention + MLP)', 'La proiezione finale sui logit', 'Il tokenizer'], ans: 0, why: 'Il blocco mappa [T, d] in [T, d], per questo si possono impilare L blocchi. La proiezione finale porta a [T, V]; il tokenizer produce [T] interi.' },
+      { q: 'Raddoppiando <var>d</var> e lasciando il resto invariato, i parametri dei blocchi circa…', opts: ['raddoppiano', 'quadruplicano', 'restano uguali'], ans: 1, why: 'I blocchi sono dominati da matrici d×d e d×d_ff (con d_ff proporzionale a d): crescono come d².' },
+      { q: 'In generazione, quale posizione dei logit serve per scegliere il token successivo?', opts: ['Tutte', 'Solo l\'ultima', 'Solo la prima'], ans: 1, why: 'Le altre posizioni servono in training (ognuna predice il proprio successivo, in parallelo). In generazione conta solo l\'ultima.' },
+    ]));
+  },
+});
+
+'use strict';
+/* Module 1 - Byte-Pair Encoding, trained live on an editable corpus */
+
+function bpeWords(text) {
+  const out = [], re = /(\s*)([\p{L}\p{N}]+|[^\s\p{L}\p{N}])/gu;
+  let m, first = true;
+  while ((m = re.exec(text.toLowerCase())) !== null) {
+    const spaced = m[1].length > 0 || (first && /[\p{L}\p{N}]/u.test(m[2]));
+    out.push((spaced ? '▁' : '') + m[2]); first = false;
+  }
+  return out;
+}
+function bpePairCounts(seqs) {
+  const pc = new Map();
+  for (const s of seqs) for (let j = 0; j < s.syms.length - 1; j++) {
+    const k = s.syms[j] + '\u0001' + s.syms[j + 1]; pc.set(k, (pc.get(k) || 0) + s.f);
+  }
+  return pc;
+}
+function bpeTop(seqs, n = 6) {
+  return [...bpePairCounts(seqs)].sort((a, b) => b[1] - a[1] || (a[0] < b[0] ? -1 : 1)).slice(0, n).map(([k, c]) => [...k.split('\u0001'), c]);
+}
+function bpeTrain(text, nMerges) {
+  const freq = new Map();
+  for (const w of bpeWords(text)) freq.set(w, (freq.get(w) || 0) + 1);
+  const seqs = [...freq].map(([w, f]) => ({ w, syms: [...w], f }));
+  const base = [...new Set(seqs.flatMap(s => s.syms))].sort();
+  const merges = [], counts = [seqs.reduce((a, s) => a + s.f * s.syms.length, 0)];
+  for (let i = 0; i < nMerges; i++) {
+    const top = bpeTop(seqs, 1)[0];
+    if (!top) break;
+    const [a, b, c] = top; merges.push([a, b, c]);
+    for (const s of seqs) {
+      const o = []; let j = 0;
+      while (j < s.syms.length) {
+        if (j < s.syms.length - 1 && s.syms[j] === a && s.syms[j + 1] === b) { o.push(a + b); j += 2; } else { o.push(s.syms[j]); j++; }
+      }
+      s.syms = o;
+    }
+    counts.push(seqs.reduce((acc, s) => acc + s.f * s.syms.length, 0));
+  }
+  return { base, merges, seqs, counts };
+}
+function bpeEncodeWord(word, merges) {
+  let syms = [...word];
+  for (const [a, b] of merges) {
+    const o = []; let j = 0;
+    while (j < syms.length) {
+      if (j < syms.length - 1 && syms[j] === a && syms[j + 1] === b) { o.push(a + b); j += 2; } else { o.push(syms[j]); j++; }
+    }
+    syms = o;
+  }
+  return syms;
+}
+const bpeEncode = (text, merges) => bpeWords(text).flatMap(w => bpeEncodeWord(w, merges));
+LAB.tests.bpe = { bpeWords, bpeTrain, bpeEncode, bpeEncodeWord, bpeTop };
+
+registerModule({
+  id: 'm1', n: 1, title: 'Tokenizzazione', eyebrow: 'dal testo agli interi', heading: 'Il testo diventa una sequenza di pezzi',
+  lede: 'Un modello non legge lettere né parole: legge token. La scelta dei pezzi è un compromesso tra vocabolario piccolo e sequenze corte, e si può imparare dai dati.',
+  build(root) {
+    root.append(el('div', { html: `
+      <p>Se usassimo i caratteri avremmo un vocabolario minuscolo ma sequenze lunghissime (e l'attention costa quanto il <i>quadrato</i> della lunghezza).
+      Se usassimo le parole intere il vocabolario esploderebbe e ogni parola nuova, refuso o nome proprio sarebbe sconosciuto.
+      La soluzione di quasi tutti gli LLM è il <b>Byte-Pair Encoding (BPE)</b>: si parte dai caratteri e si <b>fondono ripetutamente la coppia di simboli adiacenti più frequente</b>.
+      Le sequenze comuni diventano pezzi singoli, quelle rare restano spezzate in pezzi più piccoli. Nessuna parola è mai davvero sconosciuta.</p>
+      <p>Qui sotto puoi addestrare un BPE su un testo tuo. Il simbolo <code>▁</code> segna l'inizio di una parola (cioè uno spazio che la precede).</p>` }));
+
+    const defaultText = 'il gatto mangia il pesce. il gatto dorme sul divano. la gatta mangia il pesce fresco. il pesce nuota nel mare. il mare è calmo e il gatto dorme. i gatti mangiano il pesce e dormono sul divano.';
+    const ta = el('textarea', { id: 'bpe-corpus', 'aria-label': 'Testo di addestramento del tokenizer' }); ta.value = defaultText;
+    const segs = el('div', { class: 'scroll-x' }), pairsBox = el('div', { class: 'scroll-x' }), mergesBox = el('div', { class: 'readout' }), stats = el('div', { class: 'readout' });
+    mergesBox.style.cssText = 'max-height:210px;overflow:auto';
+    const encIn = el('input', { type: 'text', id: 'bpe-enc', value: 'il gattino mangia il pesce' }); encIn.style.width = '100%';
+    const encOut = el('div', { class: 'chips' }), encStat = el('div', { class: 'readout' });
+    const cv = canvasEl(200);
+    let R = null, hist = [];
+
+    const nm = slider({ label: 'merge', min: 0, max: 80, value: 12, onInput: () => render() });
+    const reset = button('Reset testo', () => { ta.value = defaultText; recompute(); });
+    const plus = button('+1 merge', () => { nm.set(Math.min(80, nm.get() + 1)); render(); }, 'primary');
+
+    const chart1 = setupCanvas(cv, (ctx, w, h, t) => {
+      if (!hist.length) return;
+      const xs = hist.map((_, i) => i);
+      const c = chart(ctx, w, h, t, [{ xs, ys: hist, color: t.accent, lw: 2 }], { xlabel: 'numero di merge (vocabolario = caratteri + merge)', ylabel: 'token nel testo', xmin: 0, xmax: Math.max(hist.length - 1, 1), ymin: 0, nx: 6, ny: 4 });
+      const k = Math.min(nm.get(), hist.length - 1);
+      ctx.fillStyle = t.amber; ctx.beginPath(); ctx.arc(c.X(k), c.Y(hist[k]), 5, 0, 7); ctx.fill();
+    });
+
+    function recompute() { R = bpeTrain(ta.value, 80); hist = R.counts; render(); }
+    function render() {
+      if (!R) return;
+      const n = Math.min(nm.get(), R.merges.length);
+      const cur = bpeTrain(ta.value, n);
+      const vocab = [...cur.base, ...cur.merges.map(m => m[0] + m[1])];
+      const ids = new Map(vocab.map((v, i) => [v, i]));
+      // segmentation of most frequent words
+      const rows = [...cur.seqs].sort((a, b) => b.f - a.f || (a.w < b.w ? -1 : 1)).slice(0, 10);
+      segs.replaceChildren(el('table', { class: 'tbl' }, el('tr', {}, el('th', { text: 'parola' }), el('th', { text: 'freq.' }), el('th', { text: 'token correnti' })),
+        ...rows.map(s => el('tr', {}, el('td', { text: s.w }), el('td', { text: s.f }), el('td', { style: 'text-align:left' }, el('div', { class: 'chips' }, s.syms.map((x, i) => el('span', { class: 'chip c' + (i % 4), text: x }))))))));
+      const tp = bpeTop(cur.seqs, 6), mx = tp.length ? tp[0][2] : 1;
+      pairsBox.replaceChildren(el('table', { class: 'tbl' }, el('tr', {}, el('th', { text: 'prossima coppia candidata' }), el('th', { text: 'occorrenze' }), el('th', {})),
+        ...tp.map((p, i) => el('tr', { class: i === 0 ? 'sel' : '' }, el('td', { text: `${p[0]} + ${p[1]}` }), el('td', { text: p[2] }), el('td', { style: 'width:90px' }, el('div', { class: 'bar', style: `width:${p[2] / mx * 100}%;background:var(--amber)` }))))));
+      mergesBox.innerHTML = cur.merges.length ? cur.merges.map((m, i) => `${String(i + 1).padStart(2, ' ')}. ${m[0]} + ${m[1]} → <b>${m[0] + m[1]}</b> <span class="muted">(×${m[2]})</span>`).join('<br>') : '<span class="muted">Nessun merge: il vocabolario è fatto di soli caratteri.</span>';
+      const chars = cur.seqs.reduce((a, s) => a + s.f * [...s.w].length, 0), toks = cur.counts[cur.counts.length - 1];
+      stats.innerHTML = `Vocabolario: <b>${vocab.length}</b> token (${cur.base.length} caratteri + ${cur.merges.length} merge)<br>Testo: ${chars} simboli → <b>${toks}</b> token · compressione <b>${(chars / toks).toFixed(2)}×</b>`;
+      // encoder
+      const toksE = bpeEncode(encIn.value, cur.merges);
+      encOut.replaceChildren(...toksE.map((x, i) => el('span', { class: 'chip c' + (i % 4), title: 'id ' + (ids.has(x) ? ids.get(x) : 'unk'), text: ids.has(x) ? `${x} #${ids.get(x)}` : `${x} #<unk>` })));
+      const unk = toksE.filter(x => !ids.has(x)).length, nch = [...encIn.value].length;
+      encStat.innerHTML = `${nch} caratteri → <b>${toksE.length}</b> token${unk ? ` · <span style="color:var(--rose)">${unk} sconosciuti (carattere mai visto: i tokenizer byte-level non hanno questo problema)</span>` : ''}`;
+      chart1.redraw();
+    }
+    ta.addEventListener('input', recompute); encIn.addEventListener('input', render);
+
+    root.append(lab('Laboratorio · addestra un BPE', ta, controls(nm.el, plus, reset), stats,
+      el('div', { class: 'grid2' }, el('div', {}, segs), el('div', {}, pairsBox, el('div', { class: 'lab-title', style: 'margin:14px 0 6px', text: 'Merge appresi, in ordine' }), mergesBox))));
+    root.append(lab('Laboratorio · usa il tokenizer appena addestrato',
+      el('p', { text: 'Scrivi una frase, anche con parole mai viste: vedrai come viene spezzata. I numeri dopo # sono gli id che il modello riceverebbe.' }), encIn, encOut, encStat));
+    root.append(lab('Laboratorio · rendimenti decrescenti', el('p', { text: 'Ogni merge riduce la lunghezza del testo, ma sempre meno: i primi catturano le coppie molto frequenti, gli ultimi quasi nulla. Il punto arancione è la configurazione scelta sopra.' }), cv));
+    recompute();
+
+    root.append(el('h2', { text: 'Conseguenze pratiche' }));
+    root.append(el('ul', { class: 'prose', html: `
+      <li><b>Vocabolario e costo.</b> Un vocabolario più grande aggiunge parametri (<var>V</var>·<var>d</var> nell'embedding) ma accorcia le sequenze, e il costo dell'attention scala con <var>T</var>². Gli LLM attuali usano da circa 32 mila a oltre 200 mila token.</li>
+      <li><b>Byte-level.</b> GPT-2 e successori applicano il BPE ai <i>byte</i> UTF-8, non ai caratteri: i 256 byte sono sempre nel vocabolario di base, quindi qualunque stringa è codificabile.</li>
+      <li><b>Stranezze spiegate.</b> Un modello fatica a contare le lettere di "strawberry" perché non vede lettere: vede due o tre pezzi opachi. Allo stesso modo l'aritmetica è più difficile quando i numeri sono spezzati in modo irregolare, e le lingue poco rappresentate nel corpus del tokenizer costano più token a parità di significato.</li>
+      <li><b>Token speciali.</b> Il vocabolario contiene anche simboli di controllo (inizio/fine testo, turni di conversazione, tool). Per il modello sono token come gli altri.</li>` }));
+    root.append(details('math', 'La matematica: l\'algoritmo BPE', 'algoritmo', `
+      <p>Sia <var>C</var> il corpus, ridotto a un multiinsieme di parole con frequenza <var>f</var>(<var>w</var>), ognuna scritta come sequenza di simboli. Si ripete:</p>
+      <ol class="prose"><li>per ogni coppia di simboli adiacenti (<var>a</var>, <var>b</var>) calcola <span class="eq" style="display:inline;padding:2px 8px"><var>n</var>(<var>a</var>,<var>b</var>) = Σ<sub><var>w</var></sub> <var>f</var>(<var>w</var>)·#(<var>a</var><var>b</var> in <var>w</var>)</span></li>
+      <li>scegli (<var>a</var>*, <var>b</var>*) = argmax <var>n</var>(<var>a</var>,<var>b</var>) e aggiungi il nuovo simbolo <var>a</var>*<var>b</var>* al vocabolario;</li>
+      <li>sostituisci ovunque la coppia con il nuovo simbolo.</li></ol>
+      <p>Dopo <var>K</var> merge il vocabolario ha |<i>base</i>| + <var>K</var> elementi. Per <b>codificare</b> un testo nuovo si applicano gli stessi merge nello stesso ordine: l'ordine è parte del modello. L'algoritmo è greedy e deterministico; non ottimizza una funzione di costo globale.</p>
+      <p>Esistono alternative (Unigram LM, WordPiece) che scelgono i pezzi con criteri probabilistici diversi, ma l'idea generale è la stessa: un dizionario di pezzi appreso dai dati.</p>`));
+    root.append(el('h2', { text: 'Verifica rapida' }));
+    root.append(quiz([
+      { q: 'Perché vocabolari più grandi accorciano le sequenze?', opts: ['Perché ogni token può rappresentare più caratteri', 'Perché il modello diventa più veloce', 'Perché si eliminano i token rari'], ans: 0, why: 'Più merge significano pezzi più lunghi in media, quindi meno token per lo stesso testo.' },
+      { q: 'Il tokenizer viene addestrato insieme al modello con la backpropagation?', opts: ['Sì, con la stessa loss', 'No: si addestra prima, separatamente, e poi resta fisso'], ans: 1, why: 'Il BPE è un algoritmo di conteggio, non è differenziabile. Si costruisce una volta sul corpus e il modello impara embedding per quei pezzi.' },
+      { q: 'Il modello riceve in ingresso…', opts: ['le lettere della parola', 'indici interi dei token', 'il significato della parola'], ans: 1, why: 'Solo interi. Il significato dovrà emergere dagli embedding appresi (modulo 2).' },
+    ]));
+  },
+});
+
+'use strict';
+/* Module 2 - embeddings: lookup table, geometry, cosine similarity, analogies */
+(function () {
+  const DIMS = ['animato', 'umano', 'genere (M+ / F−)', 'nobiltà', 'taglia', 'commestibile', 'luogo', 'azione', 'area (IT+ / FR−)'];
+  const CATS = [['persone', 'accent'], ['animali', 'amber'], ['cibo', 'teal'], ['luoghi', 'rose'], ['azioni', 'muted']];
+  const RAW = [
+    ['re', 0, [1, 1, 1, 1, .3, 0, 0, 0, 0]], ['regina', 0, [1, 1, -1, 1, .3, 0, 0, 0, 0]],
+    ['principe', 0, [1, 1, 1, .7, 0, 0, 0, 0, 0]], ['principessa', 0, [1, 1, -1, .7, 0, 0, 0, 0, 0]],
+    ['uomo', 0, [1, 1, 1, 0, .2, 0, 0, 0, 0]], ['donna', 0, [1, 1, -1, 0, .1, 0, 0, 0, 0]],
+    ['ragazzo', 0, [1, 1, 1, 0, -.3, 0, 0, 0, 0]], ['ragazza', 0, [1, 1, -1, 0, -.3, 0, 0, 0, 0]],
+    ['gatto', 1, [1, 0, .1, 0, -.6, 0, 0, 0, 0]], ['cane', 1, [1, 0, .1, 0, -.2, 0, 0, 0, 0]],
+    ['leone', 1, [1, 0, .6, .3, .6, 0, 0, 0, 0]], ['tigre', 1, [1, 0, .2, .1, .5, 0, 0, 0, 0]], ['pesce', 1, [1, 0, 0, 0, -.5, .4, 0, 0, 0]],
+    ['mela', 2, [0, 0, 0, 0, -.6, 1, 0, 0, 0]], ['pane', 2, [0, 0, 0, 0, -.2, 1, 0, 0, 0]], ['pizza', 2, [0, 0, 0, 0, .1, 1, .2, 0, .5]],
+    ['Roma', 3, [0, 0, 0, 0, .4, 0, 1, 0, 1]], ['Parigi', 3, [0, 0, 0, 0, .4, 0, 1, 0, -1]],
+    ['Italia', 3, [0, 0, 0, 0, 1, 0, .8, 0, 1]], ['Francia', 3, [0, 0, 0, 0, 1, 0, .8, 0, -1]],
+    ['correre', 4, [.5, 0, 0, 0, 0, 0, 0, 1, 0]], ['camminare', 4, [.5, 0, 0, 0, -.3, 0, 0, .8, 0]],
+    ['mangiare', 4, [.5, 0, 0, 0, 0, .4, 0, 1, 0]], ['dormire', 4, [.5, 0, 0, 0, -.4, 0, 0, .5, 0]],
+  ];
+  const r = rng(11);
+  const WORDS = RAW.map(w => w[0]), CAT = RAW.map(w => w[1]), E = RAW.map(w => w[2].map(v => v + (r() - 0.5) * 0.12));
+  LAB.tests.emb = { WORDS, E };
+
+  registerModule({
+    id: 'm2', n: 2, title: 'Embedding', eyebrow: 'dagli interi ai vettori', heading: 'Ogni token è un punto in uno spazio',
+    lede: 'L\'embedding è una tabella: l\'indice del token seleziona una riga. Il bello è che, dopo l\'addestramento, la geometria di quello spazio riflette il significato.',
+    build(root) {
+      root.append(el('div', { html: `
+        <p>Un intero come 4827 non dice nulla al modello: non è "più vicino" a 4828 di quanto lo sia a 12. Serve una rappresentazione in cui <b>la vicinanza abbia senso</b>.
+        Si assegna a ogni token un vettore di <var>d</var> numeri reali (da poche centinaia a diverse migliaia). Tutti questi vettori, impilati, formano la matrice di embedding <var>E</var> di forma <var>V</var>×<var>d</var>:
+        ed <b>è una normale matrice di parametri</b>, inizializzata a caso e migliorata dalla backpropagation come ogni altro peso.</p>
+        <p>Matematicamente "cercare l'embedding" equivale a moltiplicare il vettore one-hot del token per <var>E</var>; in pratica si legge semplicemente la riga corrispondente.</p>` }));
+      root.append(el('div', { class: 'note', html: '<b>Onestà</b>I 24 vettori qui sotto sono <b>costruiti a mano</b> con 9 dimensioni interpretabili (più un po\' di rumore), solo per rendere visibile la geometria. In un modello vero le dimensioni non hanno nomi, sono migliaia, e le direzioni significative non coincidono con gli assi. Nel modulo 8 vedrai embedding veri, appresi dai dati.' }));
+
+      let sel = WORDS.indexOf('re'), mode = 'pca', axes = [0, 2, 4], star = null;
+      const cv = canvasEl(400), mat = canvasEl(330);
+      let proj = [];
+      function computeProj() {
+        let P;
+        if (mode === 'pca') P = pca(E, 3).proj; else P = E.map(row => axes.map(a => row[a]));
+        const m = Math.max(...P.flat().map(Math.abs)) || 1; proj = P.map(p => p.map(v => v / m));
+        if (star) star.p = (mode === 'pca' ? (() => { const pc = pca(E, 3); return pc.comps.map(c => dot(star.v.map((v, j) => v - pc.mu[j]), c)); })() : axes.map(a => star.v[a])).map(v => v / m);
+      }
+      const cam = new Cam3D(cv, () => c3.redraw(), { yaw: 0.6, pitch: 0.35 });
+      let screen = [];
+      const c3 = setupCanvas(cv, (ctx, w, h, t) => {
+        if (!proj.length) return;
+        const s = Math.min(w, h) * 0.38, col = i => t[CATS[CAT[i]][1]];
+        const O = cam.project(0, 0, 0, w, h, s);
+        [[1, 0, 0], [0, 1, 0], [0, 0, 1]].forEach((a, k) => {
+          const q = cam.project(a[0] * 1.05, a[1] * 1.05, a[2] * 1.05, w, h, s), q2 = cam.project(-a[0] * 1.05, -a[1] * 1.05, -a[2] * 1.05, w, h, s);
+          ctx.strokeStyle = rgba(t.line, 0.9); ctx.lineWidth = 1; ctx.beginPath(); ctx.moveTo(q2[0], q2[1]); ctx.lineTo(q[0], q[1]); ctx.stroke();
+          text(ctx, mode === 'pca' ? 'PC' + (k + 1) : DIMS[axes[k]], q[0], q[1] - 6, { color: t.muted, size: 10, align: 'center' });
+        });
+        screen = proj.map((p, i) => ({ i, q: cam.project(p[0], p[1], p[2], w, h, s) }));
+        if (sel >= 0) {
+          screen.slice().sort((a, b) => a.q[2] - b.q[2]);
+          const nn = neighbors(E[sel], [sel], 3);
+          nn.forEach(n => { const a = screen[sel].q, b = screen[n.i].q; ctx.strokeStyle = rgba(t.accent, 0.5); ctx.setLineDash([4, 4]); ctx.beginPath(); ctx.moveTo(a[0], a[1]); ctx.lineTo(b[0], b[1]); ctx.stroke(); ctx.setLineDash([]); });
+        }
+        [...screen].sort((a, b) => a.q[2] - b.q[2]).forEach(({ i, q }) => {
+          const depth = clamp(0.6 + q[2] * 0.25, 0.35, 1), rad = i === sel ? 7 : 4.5;
+          ctx.globalAlpha = depth; ctx.fillStyle = col(i); ctx.beginPath(); ctx.arc(q[0], q[1], rad, 0, 7); ctx.fill();
+          if (i === sel) { ctx.strokeStyle = t.ink; ctx.lineWidth = 2; ctx.stroke(); }
+          text(ctx, WORDS[i], q[0] + 8, q[1] + 4, { color: i === sel ? t.ink : t.ink, size: i === sel ? 13 : 11, weight: i === sel ? 700 : 500, sans: true });
+          ctx.globalAlpha = 1;
+        });
+        if (star && star.p) {
+          const q = cam.project(star.p[0], star.p[1], star.p[2], w, h, s);
+          ctx.strokeStyle = t.rose; ctx.lineWidth = 2; ctx.beginPath();
+          for (let k = 0; k < 5; k++) { const a = -Math.PI / 2 + k * 4 * Math.PI / 5, x = q[0] + Math.cos(a) * 11, y = q[1] + Math.sin(a) * 11; k ? ctx.lineTo(x, y) : ctx.moveTo(x, y); }
+          ctx.closePath(); ctx.stroke(); text(ctx, 'risultato', q[0] + 14, q[1] - 10, { color: t.rose, size: 11, weight: 700, sans: true });
+        }
+      });
+      cv.addEventListener('click', ev => {
+        if (cam.wasDrag) { cam.wasDrag = false; return; }
+        const rc = cv.getBoundingClientRect(), x = ev.clientX - rc.left, y = ev.clientY - rc.top;
+        let best = -1, bd = 18;
+        screen.forEach(({ i, q }) => { const d = Math.hypot(q[0] - x, q[1] - y); if (d < bd) { bd = d; best = i; } });
+        if (best >= 0) { sel = best; refresh(); }
+      });
+
+      function neighbors(v, excl, k) {
+        return WORDS.map((w, i) => ({ i, w, c: cosine(v, E[i]) })).filter(o => !excl.includes(o.i)).sort((a, b) => b.c - a.c).slice(0, k);
+      }
+
+      /* matrix lookup */
+      const cm = setupCanvas(mat, (ctx, w, h, t) => {
+        const n = WORDS.length, left = 92, top = 28, ch = Math.min(15, (h - top - 6) / n), cw = Math.min(34, (w - left - 8) / DIMS.length);
+        heat(ctx, E, left, top, cw, ch, { t, diverging: true, vmin: -1, vmax: 1, rows: WORDS, hi: sel, cols: DIMS.map((_, j) => 'd' + j) });
+        ctx.strokeStyle = t.amber; ctx.lineWidth = 2; ctx.strokeRect(left - 1, top + sel * ch - 1, cw * DIMS.length + 1, ch + 1);
+        text(ctx, 'E  (V × d)', 6, 14, { color: t.muted, size: 11 });
+      });
+
+      /* panels */
+      const info = el('div', { class: 'readout' }), cmpA = select(WORDS.map((w, i) => [i, w]), WORDS.indexOf('gatto'), () => refresh(), 'confronta con');
+      const cmpOut = el('div', { class: 'readout' });
+      const modeSel = select([['pca', 'PCA (3 componenti)'], ['axes', 'Assi scelti da te']], 'pca', v => { mode = v; axesBox.hidden = v === 'pca'; computeProj(); c3.redraw(); }, 'proiezione');
+      const axSel = [0, 1, 2].map(k => select(DIMS.map((d, j) => [j, d]), axes[k], v => { axes[k] = +v; computeProj(); c3.redraw(); }));
+      const axesBox = el('div', { class: 'controls', hidden: true }, ['x', 'y', 'z'].map((n, k) => el('label', { class: 'ctl' }, el('span', { class: 'ctl-l', text: n }), axSel[k])));
+      const legend = el('div', { class: 'legend' }, CATS.map(([n, c]) => el('span', { html: `<i style="background:var(--${c})"></i>${n}` })));
+
+      function refresh() {
+        const v = E[sel], nn = neighbors(v, [sel], 4);
+        info.innerHTML = `<b>${WORDS[sel]}</b> · id ${sel} · riga di E<br>` + DIMS.map((d, j) => `${d.padEnd(18, ' ').replace(/ /g, '&nbsp;')} <span style="color:${v[j] >= 0 ? 'var(--accent)' : 'var(--rose)'}">${f2(v[j])}</span>`).join('<br>') +
+          `<br><br>Più simili (coseno): ` + nn.map(n => `${n.w} <b>${f2(n.c)}</b>`).join(' · ');
+        const o = +cmpA.querySelector('select').value, a = E[sel], b = E[o], cs = cosine(a, b);
+        cmpOut.innerHTML = `${WORDS[sel]} · ${WORDS[o]}<br>prodotto scalare = <b>${f2(dot(a, b))}</b><br>coseno = <b>${f2(cs)}</b> → angolo <b>${f2(Math.acos(clamp(cs, -1, 1)) * 180 / Math.PI, 0)}°</b>`;
+        c3.redraw(); cm.redraw();
+      }
+      root.append(lab('Laboratorio · lo spazio degli embedding (trascina per ruotare, clicca un punto)',
+        controls(modeSel), axesBox, cv, legend,
+        el('div', { class: 'grid2' }, el('div', {}, info), el('div', {}, controls(cmpA), cmpOut))));
+      root.append(lab('Laboratorio · la tabella E: cercare = leggere una riga', mat,
+        el('p', { html: 'La riga evidenziata è il vettore del token selezionato. Blu = valore positivo, rosa = negativo. Moltiplicare il one-hot <code>[0,…,1,…,0]</code> per <var>E</var> restituisce esattamente questa riga.' })));
+
+      /* analogy */
+      const names = WORDS.map((w, i) => [i, w]);
+      const aS = select(names, WORDS.indexOf('re'), () => ana(), 'a'), bS = select(names, WORDS.indexOf('uomo'), () => ana(), '− b'), cS = select(names, WORDS.indexOf('donna'), () => ana(), '+ c');
+      const anaOut = el('div', { class: 'readout' });
+      function ana() {
+        const [a, b, c] = [aS, bS, cS].map(s => +s.querySelector('select').value), v = E[a].map((x, j) => x - E[b][j] + E[c][j]);
+        const nn = neighbors(v, [a, b, c], 3); star = { v };
+        anaOut.innerHTML = `${WORDS[a]} − ${WORDS[b]} + ${WORDS[c]} ≈ <b>${nn[0].w}</b> (coseno ${f2(nn[0].c)})<br><span class="muted">poi: ${nn.slice(1).map(n => `${n.w} ${f2(n.c)}`).join(' · ')}</span>`;
+        computeProj(); c3.redraw();
+      }
+      root.append(lab('Laboratorio · aritmetica sugli embedding', controls(aS, bS, cS), anaOut,
+        el('p', { html: 'Prova <code>re − uomo + donna</code>, <code>Roma − Italia + Francia</code>, <code>gatto − animali + …</code>. La stella rosa nello spazio sopra mostra dove cade il risultato. Nei modelli veri questo funziona solo in modo approssimato e per alcune relazioni, ma l\'idea che relazioni diverse corrispondano a <i>direzioni</i> è reale.' })));
+      computeProj(); refresh(); ana();
+
+      root.append(el('h2', { text: 'Che cosa impara davvero la tabella' }));
+      root.append(el('p', { html: `Nessuno decide che "genere" sia una direzione. L'addestramento aggiusta le righe di <var>E</var> per rendere più probabile il token successivo corretto: parole usate in contesti simili finiscono per avere righe simili, perché devono produrre previsioni simili.
+        La struttura del significato è un sottoprodotto. Nel prossimo modulo vedremo come ai vettori si aggiunge l'informazione sulla posizione, e poi come l'attention li mescola: dopo i primi layer il vettore di un token non rappresenta più la parola isolata, ma la parola <i>in quel contesto</i>.` }));
+      root.append(details('math', 'La matematica: coseno, prodotto scalare e lookup', 'formule', `
+        <p>Il <b>prodotto scalare</b> di due vettori è <span class="m"><var>a</var>·<var>b</var> = Σ<sub><var>i</var></sub> <var>a</var><sub><var>i</var></sub><var>b</var><sub><var>i</var></sub> = ‖<var>a</var>‖‖<var>b</var>‖ cos θ</span>. Il <b>coseno</b> lo normalizza e misura solo l'angolo:</p>
+        <span class="eq">cos θ = ${frac('<var>a</var>·<var>b</var>', '‖<var>a</var>‖ ‖<var>b</var>‖')}</span>
+        <p>Vale 1 per vettori allineati, 0 per ortogonali, −1 per opposti. Nell'attention si usa il prodotto scalare <i>non normalizzato</i>: la lunghezza dei vettori conta, e il modello può usarla per esprimere "quanto sono sicuro".</p>
+        <p><b>Lookup come prodotto matriciale.</b> Se <var>x</var> ∈ {0,1}<sup><var>V</var></sup> è il one-hot del token <var>i</var>, allora <span class="m"><var>x</var><sup>T</sup><var>E</var> = <var>E</var><sub><var>i</var>,:</sub></span>. Nella backpropagation il gradiente della loss rispetto a <var>E</var> è diverso da zero solo nelle righe dei token presenti nel batch.</p>
+        <p><b>Dimensione.</b> Con <var>d</var> grande, vettori casuali sono quasi ortogonali (il coseno tipico è ~ 1/√<var>d</var>): c'è "spazio" per rappresentare molte più feature che dimensioni, a patto di tollerare piccole interferenze. È l'ipotesi di <i>superposition</i> studiata nell'interpretabilità.</p>`));
+      root.append(details('refresh', 'Ripasso: prodotto scalare e matrici', 'algebra lineare', `
+        <p>Un vettore è una lista di numeri; geometricamente è una freccia. Il prodotto scalare moltiplica le componenti a coppie e somma: [1, 2]·[3, 4] = 1·3 + 2·4 = 11.</p>
+        <p>Una matrice <var>A</var> (<var>n</var>×<var>k</var>) per una matrice <var>B</var> (<var>k</var>×<var>m</var>) dà una matrice <var>n</var>×<var>m</var>, dove l'elemento (<var>i</var>,<var>j</var>) è il prodotto scalare tra la riga <var>i</var> di <var>A</var> e la colonna <var>j</var> di <var>B</var>. La dimensione interna <var>k</var> deve coincidere. Quasi tutto in un LLM è questa operazione.</p>`));
+      root.append(el('h2', { text: 'Verifica rapida' }));
+      root.append(quiz([
+        { q: 'Quanti parametri ha la matrice di embedding con vocabolario 50 000 e <var>d</var> = 768?', opts: ['768', '≈ 38,4 milioni', '≈ 50 mila'], ans: 1, why: '50 000 × 768 = 38,4 milioni: una riga di 768 numeri per ogni token del vocabolario.' },
+        { q: 'Due vettori con coseno vicino a 1 sono…', opts: ['quasi ortogonali', 'quasi allineati (direzione simile)', 'sempre della stessa lunghezza'], ans: 1, why: 'Il coseno misura solo l\'angolo. Due vettori possono avere direzione identica e lunghezze molto diverse.' },
+        { q: 'Chi decide che una direzione dello spazio rappresenti "genere"?', opts: ['Gli ingegneri, a mano', 'L\'addestramento: emerge perché utile per prevedere il testo', 'Il tokenizer'], ans: 1, why: 'Le righe di E sono parametri come gli altri. Le regolarità del linguaggio spingono le parole simili a vettori simili.' },
+      ]));
+    },
+  });
+})();
+
+'use strict';
+/* Module 3 - positions: permutation blindness, sinusoidal encoding, RoPE */
+const sinPE = (pos, d) => { const o = new Array(d); for (let i = 0; i < d / 2; i++) { const w = Math.pow(10000, -2 * i / d); o[2 * i] = Math.sin(pos * w); o[2 * i + 1] = Math.cos(pos * w); } return o; };
+LAB.tests.sinPE = sinPE;
+
+registerModule({
+  id: 'm3', n: 3, title: 'Posizioni', eyebrow: 'dove sta ogni token', heading: 'L\'attention non sa contare',
+  lede: 'Senza un\'informazione esplicita sull\'ordine, "il gatto mangia il pesce" e "il pesce mangia il gatto" sono per il modello lo stesso insieme di parole. Le codifiche posizionali risolvono il problema.',
+  build(root) {
+    root.append(el('div', { html: `
+      <p>L'attention (modulo 4) confronta ogni token con tutti gli altri tramite prodotti scalari: il risultato per un token dipende da <i>quali</i> altri token ci sono, non da <i>dove</i> sono. Si dice che l'operazione è <b>equivariante alle permutazioni</b>.
+      Provalo qui sotto: ho preso un piccolo blocco di self-attention con pesi casuali, ho calcolato l'uscita per la parola "gatto", poi ho rimescolato le parole e ripetuto il calcolo.</p>` }));
+
+    /* ---- Lab A ---- */
+    const d = 6, r = rng(3), TOK = ['il', 'gatto', 'mangia', 'pesce'];
+    const emb = TOK.map(() => range(d).map(() => r.gauss() * 0.8));
+    const mk = () => range(d).map(() => range(d).map(() => r.gauss() * 0.55));
+    const Wq = mk(), Wk = mk(), Wv = mk();
+    let usePE = false, perm = [0, 1, 2, 3], outs = null;
+    const out = el('div', { class: 'readout' }), order = el('div', { class: 'chips' }), cv = canvasEl(230);
+    function run() {
+      const go = p => {
+        const X = p.map((tk, pos) => emb[tk].map((v, j) => v + (usePE ? sinPE(pos, d)[j] : 0)));
+        return attention(X, Wq, Wk, Wv, false).Z[p.indexOf(1)];
+      };
+      const a = go([0, 1, 2, 3]), b = go(perm); outs = { a, b };
+      const diff = Math.max(...a.map((v, i) => Math.abs(v - b[i])));
+      order.replaceChildren(el('span', { class: 'muted', text: 'ordine attuale:' }), ...perm.map(i => el('span', { class: 'chip', text: TOK[i] })));
+      out.innerHTML = `Differenza massima tra le due uscite di "gatto": <b>${diff.toExponential(2)}</b> ` + (diff < 1e-9 ? '→ <b>identiche</b>: il modello non ha modo di sapere che le parole sono state spostate.' : '→ <b>diverse</b>: ora l\'ordine influenza il risultato.');
+      c.redraw();
+    }
+    const c = setupCanvas(cv, (ctx, w, h, t) => {
+      if (!outs) return;
+      const m = Math.max(1, ...outs.a.map(Math.abs), ...outs.b.map(Math.abs)), x0 = 40, bw = (w - x0 - 10) / d, y0 = h / 2 + 8, sc = (h / 2 - 34) / m;
+      ctx.strokeStyle = t.muted; ctx.beginPath(); ctx.moveTo(x0, y0); ctx.lineTo(w - 6, y0); ctx.stroke();
+      for (let j = 0; j < d; j++) {
+        const x = x0 + j * bw + 6;
+        ctx.fillStyle = t.accent; ctx.fillRect(x, y0, bw * 0.38, -outs.a[j] * sc);
+        ctx.fillStyle = t.amber; ctx.fillRect(x + bw * 0.4, y0, bw * 0.38, -outs.b[j] * sc);
+        text(ctx, 'd' + j, x + bw * 0.4, h - 6, { color: t.muted, align: 'center', size: 11 });
+      }
+      text(ctx, 'ordine originale', 44, 16, { color: t.accent, size: 12, sans: true, weight: 700 });
+      text(ctx, 'ordine rimescolato', 170, 16, { color: t.amber, size: 12, sans: true, weight: 700 });
+      text(ctx, 'uscita', 4, y0 - 6, { color: t.muted, size: 10 });
+    });
+    const shuffle = button('Mescola le parole', () => { const rr = Math.random; let p; do { p = [0, 1, 2, 3].sort(() => rr() - 0.5); } while (p.every((v, i) => v === i)); perm = p; run(); }, 'primary');
+    const chk = checkbox('aggiungi codifica posizionale sinusoidale', false, v => { usePE = v; run(); });
+    root.append(lab('Laboratorio · ordine invisibile', controls(shuffle, button('Ripristina', () => { perm = [0, 1, 2, 3]; run(); }), chk), order, cv, out,
+      el('p', { class: 'muted', html: 'Barre blu: vettore di uscita di "gatto" nell\'ordine originale. Barre arancioni: lo stesso dopo il rimescolamento. (Qui l\'attention guarda tutti i token; nei modelli causali la maschera lascia filtrare un po\' di informazione posizionale, ma esplicita e robusta serve comunque.)' })));
+    run();
+
+    root.append(el('h2', { text: 'Tre soluzioni' }));
+    root.append(el('ul', { class: 'prose', html: `
+      <li><b>Posizioni apprese</b> (GPT-2): una seconda tabella <var>P</var> di forma <var>T</var><sub>max</sub>×<var>d</var>; si somma la riga della posizione all'embedding. Semplice, ma non si estende oltre la lunghezza vista in training.</li>
+      <li><b>Sinusoidale</b> (transformer originale): vettori fissi, costruiti con seni e coseni a frequenze diverse. Nessun parametro. Qui sotto.</li>
+      <li><b>RoPE</b> (Llama, Qwen, Mistral e molti altri): non si somma nulla; si <i>ruotano</i> query e key in funzione della posizione, così che il loro prodotto scalare dipenda solo dalla distanza relativa. Più in basso.</li>` }));
+
+    /* ---- Lab B: sinusoidal ---- */
+    const ch = canvasEl(300), cd = canvasEl(220), cw = canvasEl(220);
+    const sN = slider({ label: 'posizioni', min: 8, max: 128, step: 8, value: 64, onInput: () => redrawB() });
+    const sD = slider({ label: 'd', min: 8, max: 128, step: 8, value: 64, onInput: () => redrawB() });
+    const hm = setupCanvas(ch, (ctx, w, h, t) => {
+      const N = sN.get(), D = sD.get(), left = 36, top = 18, cwid = (w - left - 6) / D, chei = (h - top - 6) / N;
+      const M = range(N).map(p => sinPE(p, D));
+      heat(ctx, M, left, top, cwid, chei, { t, diverging: true, vmin: -1, vmax: 1 });
+      text(ctx, 'dimensione →  (frequenza decresce da sinistra a destra)', left, 11, { color: t.muted, size: 11 });
+      ctx.save(); ctx.translate(11, h / 2 + 30); ctx.rotate(-Math.PI / 2); text(ctx, 'posizione ↓', 0, 0, { color: t.muted, size: 11 }); ctx.restore();
+    });
+    const dc = setupCanvas(cd, (ctx, w, h, t) => {
+      const D = sD.get(), ks = range(81), f = (p, k) => dot(sinPE(p, D), sinPE(p + k, D)) / D;
+      chart(ctx, w, h, t, [{ xs: ks, ys: ks.map(k => f(0, k)), color: t.accent, lw: 3, label: 'p = 0' }, { xs: ks, ys: ks.map(k => f(37, k)), color: t.amber, dash: [6, 4], label: 'p = 37' }],
+        { xlabel: 'distanza k tra le due posizioni', ylabel: 'PE(p)·PE(p+k) / d', ymin: -0.5, ymax: 1, ny: 3, xmin: 0, xmax: 80 });
+    });
+    const wc = setupCanvas(cw, (ctx, w, h, t) => {
+      const D = sD.get(), xs = range(129), cols = [t.accent, t.amber, t.teal, t.rose];
+      const S = [0, 1, 2, 3].map(j => { const i = Math.round(j * (D / 2) / 4); return { i, xs, ys: xs.map(p => Math.sin(p / Math.pow(10000, 2 * i / D))), color: cols[j], label: 'i=' + i }; });
+      chart(ctx, w, h, t, S, { xlabel: 'posizione', ylabel: 'sin(p·ωᵢ)', ymin: -1, ymax: 1, ny: 2, xmin: 0, xmax: 128 });
+    });
+    function redrawB() { hm.redraw(); dc.redraw(); wc.redraw(); }
+    root.append(lab('Laboratorio · codifica sinusoidale', controls(sN.el, sD.el), ch,
+      el('div', { class: 'grid2' }, el('div', {}, el('p', { html: '<b>Onde a frequenze diverse.</b> Le prime dimensioni oscillano veloci, le ultime lentissime: come le cifre di un contatore, che permettono di leggere la posizione a scale diverse.' }), cw),
+        el('div', {}, el('p', { html: '<b>Distanza relativa.</b> Il prodotto scalare tra due posizioni dipende solo dalla loro distanza <var>k</var>: le curve per <var>p</var> = 0 e <var>p</var> = 37 sono sovrapposte.' }), cd))));
+    redrawB();
+
+    /* ---- Lab C: RoPE ---- */
+    const cr = canvasEl(300);
+    const sm = slider({ label: 'posizione di q (m)', min: 0, max: 30, value: 5, onInput: () => rp() });
+    const sn = slider({ label: 'posizione di k (n)', min: 0, max: 30, value: 2, onInput: () => rp() });
+    const sth = slider({ label: 'θ (rad/posizione)', min: 0.05, max: 1.0, step: 0.05, value: 0.4, fmt: v => v.toFixed(2), onInput: () => rp() });
+    const sq = slider({ label: 'angolo di q', min: 0, max: 360, step: 5, value: 70, fmt: v => v + '°', onInput: () => rp() });
+    const sk = slider({ label: 'angolo di k', min: 0, max: 360, step: 5, value: 20, fmt: v => v + '°', onInput: () => rp() });
+    const tbl = el('div', { class: 'scroll-x' }), ro = el('div', { class: 'readout' });
+    const rot = (v, a) => [v[0] * Math.cos(a) - v[1] * Math.sin(a), v[0] * Math.sin(a) + v[1] * Math.cos(a)];
+    const state = () => { const th = sth.get(), q = [1.0 * Math.cos(sq.get() * Math.PI / 180), 1.0 * Math.sin(sq.get() * Math.PI / 180)], k = [0.8 * Math.cos(sk.get() * Math.PI / 180), 0.8 * Math.sin(sk.get() * Math.PI / 180)]; return { th, q, k, m: sm.get(), n: sn.get() }; };
+    const rc = setupCanvas(cr, (ctx, w, h, t) => {
+      const { th, q, k, m, n } = state(), cx = w / 2, cy = h / 2, R = Math.min(w, h) * 0.4;
+      ctx.strokeStyle = t.line; ctx.lineWidth = 1; ctx.beginPath(); ctx.arc(cx, cy, R, 0, 7); ctx.moveTo(cx - R - 8, cy); ctx.lineTo(cx + R + 8, cy); ctx.moveTo(cx, cy - R - 8); ctx.lineTo(cx, cy + R + 8); ctx.stroke();
+      const P = v => [cx + v[0] * R, cy - v[1] * R], qm = rot(q, m * th), kn = rot(k, n * th);
+      ctx.setLineDash([4, 4]); [[q, t.accent], [k, t.amber]].forEach(([v, c]) => { const p = P(v); ctx.strokeStyle = rgba(c, 0.5); ctx.beginPath(); ctx.moveTo(cx, cy); ctx.lineTo(p[0], p[1]); ctx.stroke(); }); ctx.setLineDash([]);
+      let p = P(qm); arrow(ctx, cx, cy, p[0], p[1], t.accent, 3, 10); text(ctx, `q rotata (m=${m})`, p[0] + 6, p[1] - 6, { color: t.accent, size: 12, sans: true, weight: 700 });
+      p = P(kn); arrow(ctx, cx, cy, p[0], p[1], t.amber, 3, 10); text(ctx, `k ruotata (n=${n})`, p[0] + 6, p[1] + 14, { color: t.amber, size: 12, sans: true, weight: 700 });
+      const a1 = -Math.atan2(qm[1], qm[0]), a2 = -Math.atan2(kn[1], kn[0]);
+      ctx.strokeStyle = t.rose; ctx.lineWidth = 2; ctx.beginPath(); ctx.arc(cx, cy, R * 0.28, Math.min(a1, a2), Math.max(a1, a2)); ctx.stroke();
+    });
+    function rp() {
+      const { th, q, k, m, n } = state(), sc = (mm, nn) => dot(rot(q, mm * th), rot(k, nn * th));
+      ro.innerHTML = `q<sub>m</sub>·k<sub>n</sub> = <b>${f2(sc(m, n), 4)}</b> &nbsp; (distanza relativa n − m = ${n - m})`;
+      const pairs = [[m, n], [m + 7, n + 7], [m + 23, n + 23]];
+      tbl.replaceChildren(el('table', { class: 'tbl' }, el('tr', {}, ['m', 'n', 'n − m', 'q_m · k_n'].map(x => el('th', { text: x }))), ...pairs.map(([a, b]) => el('tr', {}, [a, b, b - a, f2(sc(a, b), 6)].map(x => el('td', { text: x }))))));
+      rc.redraw();
+    }
+    root.append(lab('Laboratorio · RoPE (una coppia di dimensioni)', controls(sm.el, sn.el, sth.el), controls(sq.el, sk.el), cr, ro, tbl,
+      el('p', { html: 'Sposta insieme <var>m</var> e <var>n</var> mantenendo la loro differenza: le due frecce ruotano insieme e l\'angolo tra loro (arco rosa) non cambia, quindi il prodotto scalare resta uguale. Nel modello vero le <var>d</var> dimensioni sono divise in <var>d</var>/2 coppie, ciascuna ruotata con la propria frequenza <var>θ</var><sub>i</sub> = 10000<sup>−2i/d</sup>.' })));
+    rp();
+
+    root.append(details('math', 'La matematica: sinusoidale e RoPE', 'formule', `
+      <p><b>Sinusoidale.</b> Per posizione <var>p</var> e indice di coppia <var>i</var> (0 ≤ <var>i</var> &lt; <var>d</var>/2), con <var>ω</var><sub>i</sub> = 10000<sup>−2<var>i</var>/<var>d</var></sup>:</p>
+      <span class="eq"><var>PE</var>(<var>p</var>, 2<var>i</var>) = sin(<var>p</var>·<var>ω</var><sub>i</sub>) &nbsp;&nbsp; <var>PE</var>(<var>p</var>, 2<var>i</var>+1) = cos(<var>p</var>·<var>ω</var><sub>i</sub>)</span>
+      <p>Poiché sin <var>a</var> sin <var>b</var> + cos <var>a</var> cos <var>b</var> = cos(<var>a</var> − <var>b</var>), il prodotto scalare è
+      <span class="m"><var>PE</var>(<var>p</var>)·<var>PE</var>(<var>p</var>+<var>k</var>) = Σ<sub>i</sub> cos(<var>k</var>·<var>ω</var><sub>i</sub>)</span>: dipende solo da <var>k</var>. Inoltre <var>PE</var>(<var>p</var>+<var>k</var>) è una trasformazione lineare di <var>PE</var>(<var>p</var>) (una rotazione per ogni coppia), quindi il modello può imparare a "guardare <var>k</var> posti indietro".</p>
+      <p><b>RoPE.</b> Si raggruppano le dimensioni di <var>q</var> e <var>k</var> in coppie e si applica a ogni coppia, alla posizione <var>m</var>, la rotazione 2D:</p>
+      <span class="eq"><var>R</var><sub><var>mθ</var></sub> = ⎡ cos <var>mθ</var> &nbsp; −sin <var>mθ</var> ⎤ &nbsp; ⎣ sin <var>mθ</var> &nbsp;&nbsp; cos <var>mθ</var> ⎦</span>
+      <p>Poiché <var>R</var><sub>a</sub><sup>T</sup><var>R</var><sub>b</sub> = <var>R</var><sub>b−a</sub>:</p>
+      <span class="eq">(<var>R</var><sub><var>mθ</var></sub><var>q</var>)<sup>T</sup>(<var>R</var><sub><var>nθ</var></sub><var>k</var>) = <var>q</var><sup>T</sup> <var>R</var><sub>(<var>n</var>−<var>m</var>)<var>θ</var></sub> <var>k</var></span>
+      <p>La posizione assoluta sparisce: resta solo la distanza <var>n</var> − <var>m</var>. Nessun parametro aggiunto, e il segnale posizionale agisce direttamente nel punteggio di attention. Le frequenze basse (<var>i</var> grande) ruotano lentamente e permettono di distinguere distanze grandi; per estendere il contesto oltre quello di training si riscalano le frequenze (<i>position interpolation</i>, YaRN e simili).</p>`));
+    root.append(el('h2', { text: 'Verifica rapida' }));
+    root.append(quiz([
+      { q: 'Perché serve una codifica posizionale?', opts: ['Per ridurre i parametri', 'Perché l\'attention da sola non distingue l\'ordine dei token', 'Per velocizzare il training'], ans: 1, why: 'Mescolando i token l\'uscita per ciascuno non cambia: senza informazione esplicita l\'ordine è invisibile.' },
+      { q: 'Quale proprietà ha RoPE?', opts: ['Il punteggio q·k dipende solo dalla distanza relativa', 'Aggiunge un vettore appreso per ogni posizione', 'Elimina la softmax'], ans: 0, why: 'La rotazione di q per m e di k per n produce un prodotto scalare funzione di n − m.' },
+      { q: 'Un modello con posizioni apprese fino a 1024 riceve 2000 token. Cosa succede?', opts: ['Funziona normalmente', 'Non ha una riga di P per le posizioni oltre 1024', 'Si riscalano automaticamente'], ans: 1, why: 'La tabella P ha 1024 righe: oltre quel limite non esiste un vettore per la posizione.' },
+    ]));
+  },
+});
+
+'use strict';
+/* Module 4 - self-attention, step by step, with editable 2x2 weights */
+registerModule({
+  id: 'm4', n: 4, layer: true, title: 'Self-attention', eyebrow: 'i token si parlano', heading: 'Self-attention: chi guarda chi',
+  lede: 'È il meccanismo che permette a ogni token di raccogliere informazione dagli altri. Tutto si riduce a prodotti scalari, una softmax e una media pesata.',
+  build(root) {
+    root.append(el('div', { html: `
+      <p>Immagina che ogni token faccia tre cose con il proprio vettore <var>x</var>:</p>
+      <ul class="prose">
+        <li>si costruisce una <b>query</b> <var>q</var> = <var>x</var><var>W</var><sub>Q</sub>: "che tipo di informazione sto cercando?"</li>
+        <li>si costruisce una <b>key</b> <var>k</var> = <var>x</var><var>W</var><sub>K</sub>: "che tipo di informazione offro a chi mi cerca?"</li>
+        <li>si costruisce un <b>value</b> <var>v</var> = <var>x</var><var>W</var><sub>V</sub>: "se qualcuno mi guarda, questo è il contenuto che passo."</li>
+      </ul>
+      <p>Il punteggio tra il token <var>i</var> e il token <var>j</var> è il prodotto scalare <var>q</var><sub>i</sub>·<var>k</var><sub>j</sub>. Una softmax sulle <var>j</var> trasforma i punteggi in pesi che sommano a 1,
+      e l'uscita del token <var>i</var> è la <b>media dei value pesata con quei pesi</b>. Qui sotto tutto è in 2 dimensioni, così puoi vedere le frecce.</p>` }));
+
+    const TOK = ['il', 'gatto', 'mangia', 'il', 'pesce'];
+    const X = [[0.3, 0], [1.0, 0.1], [0.1, 1.0], [0.3, 0], [0.9, 0]];
+    const W = { q: [[0, 2], [2, 0]], k: [[1, 0], [0, 1]], v: [[1, 0], [0, 1]] };
+    const presets = {
+      'Verbo cerca sostantivi (e viceversa)': { q: [[0, 2], [2, 0]], k: [[1, 0], [0, 1]], v: [[1, 0], [0, 1]] },
+      'I simili si guardano': { q: [[1.5, 0], [0, 1.5]], k: [[1.5, 0], [0, 1.5]], v: [[1, 0], [0, 1]] },
+      'Uniforme (W_Q = 0)': { q: [[0, 0], [0, 0]], k: [[1, 0], [0, 1]], v: [[1, 0], [0, 1]] },
+      'Casuale': null,
+    };
+    let causal = false, stage = 3, qi = 2, cur = null;
+    const inputs = { q: [], k: [], v: [] };
+    const matrixBox = key => {
+      const grid = el('div', { class: 'mgrid' });
+      for (let i = 0; i < 2; i++) for (let j = 0; j < 2; j++) {
+        const inp = el('input', { type: 'number', step: '0.1', value: String(W[key][i][j]), id: uid('w'), 'aria-label': `W${key.toUpperCase()}[${i}][${j}]` });
+        inp.addEventListener('input', () => { const v = parseFloat(inp.value); if (Number.isFinite(v)) { W[key][i][j] = v; update(); } });
+        inputs[key].push(inp); grid.append(inp);
+      }
+      return el('div', { class: 'mat' }, el('span', { class: 'mname', html: `W<sub>${key.toUpperCase()}</sub>` }), grid);
+    };
+    const syncInputs = () => ['q', 'k', 'v'].forEach(k => inputs[k].forEach((inp, n) => { inp.value = String(+W[k][n >> 1][n & 1].toFixed(2)); }));
+    const applyPreset = name => {
+      let p = presets[name];
+      if (!p) { const r = rng(Math.floor(Math.random() * 1e6)); const m = () => range(2).map(() => range(2).map(() => +(r.gauss() * 1.2).toFixed(1))); p = { q: m(), k: m(), v: m() }; }
+      ['q', 'k', 'v'].forEach(k => { W[k] = p[k].map(r => r.slice()); }); syncInputs(); update();
+    };
+
+    const qkvBox = el('div', { class: 'scroll-x' });
+    const heatCv = canvasEl(260), geoCv = canvasEl(320), readout = el('div', { class: 'readout' });
+    const stageNames = ['1 · Q Kᵀ', '2 · ÷ √d_k', '3 · maschera', '4 · softmax'];
+    const stageBtns = stageNames.map((n, i) => el('button', { class: 'btn', type: 'button', 'aria-pressed': String(i === stage), text: n, onclick: () => { stage = i; stageBtns.forEach((b, k) => b.setAttribute('aria-pressed', String(k === i))); hm.redraw(); } }));
+    const maskChk = checkbox('maschera causale (nessun sguardo al futuro)', false, v => { causal = v; update(); });
+
+    function compute() {
+      const r = attention(X, W.q, W.k, W.v, causal);
+      const S0 = MX.mul(r.Q, MX.T(r.K)), S2 = r.S.map((row, i) => row.map((v, j) => causal && j > i ? -Infinity : v));
+      cur = { ...r, S0, S1: r.S, S2 };
+    }
+    function update() {
+      compute();
+      const fmt = v => `(${f2(v[0])}, ${f2(v[1])})`;
+      qkvBox.replaceChildren(el('table', { class: 'tbl' }, el('tr', {}, ['token', 'x', 'q = xW_Q', 'k = xW_K', 'v = xW_V'].map(h => el('th', { text: h }))),
+        ...TOK.map((t, i) => el('tr', { class: i === qi ? 'sel pick' : 'pick', onclick: () => { qi = i; update(); } }, [`${i} ${t}`, fmt(X[i]), fmt(cur.Q[i]), fmt(cur.K[i]), fmt(cur.V[i])].map(x => el('td', { text: x }))))));
+      const a = cur.A[qi], z = cur.Z[qi];
+      readout.innerHTML = `Query selezionata: <b>${qi} "${TOK[qi]}"</b> (clicca una riga della tabella o della matrice)<br>` +
+        `pesi: ${TOK.map((t, j) => `${t}<sub>${j}</sub> <b>${f2(a[j])}</b>`).join(' · ')}<br>` +
+        `uscita z = Σ<sub>j</sub> a<sub>j</sub> v<sub>j</sub> = <b>${fmt(z)}</b>`;
+      hm.redraw(); gc.redraw();
+    }
+
+    const hm = setupCanvas(heatCv, (ctx, w, h, t) => {
+      if (!cur) return;
+      const T = TOK.length, left = 74, top = 30, cw = Math.min(78, (w - left - 8) / T), ch = Math.min(44, (h - top - 8) / T);
+      const M = [cur.S0, cur.S1, cur.S2, cur.A][stage];
+      heat(ctx, M, left, top, cw, ch, { t, diverging: stage < 3, vmin: stage === 3 ? 0 : undefined, vmax: stage === 3 ? 1 : undefined, num: true, rows: TOK.map((x, i) => `${x} ${i}`), cols: TOK.map((x, j) => `${x} ${j}`), hi: qi });
+      ctx.strokeStyle = t.amber; ctx.lineWidth = 2; ctx.strokeRect(left - 1, top + qi * ch - 1, cw * T + 1, ch + 1);
+      text(ctx, 'query i ↓   key j →', 6, 14, { color: t.muted, size: 11 });
+      const lab = ['punteggi grezzi', 'punteggi scalati', 'punteggi mascherati', 'pesi di attention A (ogni riga somma a 1)'][stage];
+      text(ctx, lab, left + cw * T + 10 > w ? left : left + 110, 14, { color: t.ink, size: 12, sans: true, weight: 700 });
+    });
+    heatCv.addEventListener('click', ev => {
+      const rc = heatCv.getBoundingClientRect(), y = ev.clientY - rc.top, ch = Math.min(44, (rc.height - 38) / TOK.length), i = Math.floor((y - 30) / ch);
+      if (i >= 0 && i < TOK.length) { qi = i; update(); }
+    });
+
+    const gc = setupCanvas(geoCv, (ctx, w, h, t) => {
+      if (!cur) return;
+      const maxn = Math.max(...[...cur.Q, ...cur.K, ...cur.V, ...cur.Z].map(norm), 1e-6), R = Math.min(w / 2, h) * 0.38 / maxn;
+      [0, 1].forEach(p => {
+        const cx = w * (0.25 + 0.5 * p), cy = h / 2 + 8, P = v => [cx + v[0] * R, cy - v[1] * R];
+        ctx.strokeStyle = t.line; ctx.lineWidth = 1; ctx.beginPath(); ctx.moveTo(cx - maxn * R, cy); ctx.lineTo(cx + maxn * R, cy); ctx.moveTo(cx, cy - maxn * R); ctx.lineTo(cx, cy + maxn * R); ctx.arc(cx, cy, maxn * R, 0, 7); ctx.stroke();
+        text(ctx, p ? 'value e uscita' : 'query e key', cx, 16, { align: 'center', color: t.ink, size: 12, sans: true, weight: 700 });
+        if (p === 0) {
+          const q = cur.Q[qi], nq = norm(q) || 1, u = [q[0] / nq, q[1] / nq];
+          ctx.setLineDash([5, 4]); ctx.strokeStyle = rgba(t.accent, 0.55); ctx.beginPath(); const a = P([-u[0] * maxn, -u[1] * maxn]), b = P([u[0] * maxn, u[1] * maxn]); ctx.moveTo(a[0], a[1]); ctx.lineTo(b[0], b[1]); ctx.stroke(); ctx.setLineDash([]);
+          cur.K.forEach((k, j) => {
+            const tip = P(k), pr = dot(k, u), pp = P([u[0] * pr, u[1] * pr]);
+            ctx.strokeStyle = rgba(t.amber, 0.45); ctx.beginPath(); ctx.moveTo(tip[0], tip[1]); ctx.lineTo(pp[0], pp[1]); ctx.stroke();
+            ctx.fillStyle = t.amber; ctx.beginPath(); ctx.arc(pp[0], pp[1], 3, 0, 7); ctx.fill();
+            arrow(ctx, cx, cy, tip[0], tip[1], rgba(t.amber, 0.9), 2, 8);
+            text(ctx, `k${j}`, tip[0] + 5, tip[1] - 4, { color: t.amber, size: 11, weight: 700 });
+          });
+          const tq = P(q); arrow(ctx, cx, cy, tq[0], tq[1], t.accent, 3.5, 11); text(ctx, `q${qi} (${TOK[qi]})`, tq[0] + 6, tq[1] + 14, { color: t.accent, size: 12, sans: true, weight: 700 });
+        } else {
+          const A = cur.A[qi];
+          cur.V.forEach((v, j) => { const tip = P(v); arrow(ctx, cx, cy, tip[0], tip[1], rgba(t.teal, 0.2 + 0.8 * A[j]), 1.5 + 3 * A[j], 8); if (A[j] > 0.07) text(ctx, `v${j}`, tip[0] + 5, tip[1] - 4, { color: t.teal, size: 11, weight: 700 }); });
+          const z = P(cur.Z[qi]); arrow(ctx, cx, cy, z[0], z[1], t.rose, 4, 12); text(ctx, 'z', z[0] + 7, z[1] + 12, { color: t.rose, size: 13, sans: true, weight: 700 });
+        }
+      });
+      text(ctx, 'punti ambra sulla retta di q: proiezione di ogni k = punteggio (non scalato)', 8, h - 8, { color: t.muted, size: 10 });
+    });
+
+    root.append(lab('Laboratorio · 1. i pesi e i vettori',
+      el('p', { html: 'Cinque token, ciascuno con un embedding di 2 numeri (<var>x</var><sub>0</sub> ≈ "è un sostantivo", <var>x</var><sub>1</sub> ≈ "è un verbo"; scelti a mano). Le tre matrici 2×2 sono i pesi che il modello imparerebbe: modificali o scegli un preset.' }),
+      controls(...Object.keys(presets).map(n => button(n, () => applyPreset(n)))),
+      el('div', { class: 'mats' }, matrixBox('q'), matrixBox('k'), matrixBox('v')), qkvBox));
+    root.append(lab('Laboratorio · 2. dalla matrice dei punteggi ai pesi', controls(...stageBtns, maskChk), heatCv, readout,
+      el('p', { html: 'Con il preset "Verbo cerca sostantivi", la riga di <b>mangia</b> punta su gatto e pesce, mentre la riga di <b>gatto</b> punta su mangia. Nota anche che i due "il" hanno righe identiche: stesso embedding, nessuna posizione (modulo 3).' })));
+    root.append(lab('Laboratorio · 3. la geometria', geoCv,
+      el('p', { html: 'A sinistra: la freccia blu è la query selezionata, le frecce ambra sono le key. Il punto ambra sulla retta tratteggiata è la proiezione di <var>k</var><sub>j</sub> su <var>q</var>: più è lontano nella direzione di <var>q</var>, più alto è il punteggio. A destra: i value sono pesati dai pesi di attention (più sono spessi, più contano) e la loro somma è l\'uscita <var>z</var>.' })));
+    update();
+
+    /* ---- sqrt(d) lab ---- */
+    root.append(el('h2', { text: 'Perché dividere per √d' }));
+    root.append(el('p', { html: 'Se le componenti di <var>q</var> e <var>k</var> hanno varianza 1, il loro prodotto scalare ha varianza <var>d</var><sub>k</sub>: la sua deviazione standard cresce come √<var>d</var><sub>k</sub>. Con <var>d</var><sub>k</sub> = 128 i punteggi oscillano facilmente di ±30, e la softmax diventa quasi un one-hot: un peso vale ~1, tutti gli altri ~0, e <b>il gradiente svanisce</b>. Dividere per √<var>d</var><sub>k</sub> riporta la deviazione standard a 1.' }));
+    const dkS = slider({ label: 'd_k', min: 1, max: 512, value: 64, onInput: () => sq(), id: 'dk-slider' }), sqCv = canvasEl(230), sqOut = el('div', { class: 'readout' });
+    let hist = null;
+    function sq() {
+      const d = dkS.get(), r = rng(5), N = 1500, raw = [], T = 8; let pmaxR = 0, pmaxS = 0, jR = 0, jS = 0;
+      for (let n = 0; n < N; n++) { let s = 0; for (let i = 0; i < d; i++) s += r.gauss() * r.gauss(); raw.push(s); }
+      for (let n = 0; n < 400; n++) {
+        const sc = range(T).map(() => { let s = 0; for (let i = 0; i < d; i++) s += r.gauss() * r.gauss(); return s; });
+        const pr = softmax(sc), ps = softmax(sc.map(v => v / Math.sqrt(d)));
+        pmaxR += Math.max(...pr) / 400; pmaxS += Math.max(...ps) / 400; jR += sum(pr.map(p => p * (1 - p))) / 400; jS += sum(ps.map(p => p * (1 - p))) / 400;
+      }
+      const sd = Math.sqrt(sum(raw.map(v => v * v)) / N);
+      hist = { raw, d, sd };
+      sqOut.innerHTML = `Deviazione standard dei punteggi: senza scala <b>${f2(sd, 1)}</b> (teoria √d = ${f2(Math.sqrt(d), 1)}) · con scala <b>${f2(sd / Math.sqrt(d))}</b><br>` +
+        `Con 8 key: peso massimo medio senza scala <b>${f2(pmaxR)}</b>, con scala <b>${f2(pmaxS)}</b> · segnale di gradiente Σp(1−p): <b>${f2(jR)}</b> contro <b>${f2(jS)}</b>`;
+      sc2.redraw();
+    }
+    const sc2 = setupCanvas(sqCv, (ctx, w, h, t) => {
+      if (!hist) return;
+      const { raw, d } = hist, lim = 3.2 * Math.sqrt(d), B = 41, bins = new Array(B).fill(0), bs = new Array(B).fill(0), xs = range(B).map(i => -lim + (i + 0.5) * 2 * lim / B);
+      raw.forEach(v => { const k = Math.floor((v + lim) / (2 * lim) * B); if (k >= 0 && k < B) bins[k]++; const u = v / Math.sqrt(d), k2 = Math.floor((u + lim) / (2 * lim) * B); if (k2 >= 0 && k2 < B) bs[k2]++; });
+      const ys = bins.map(v => v / raw.length), ys2 = bs.map(v => v / raw.length);
+      chart(ctx, w, h, t, [{ xs, ys, color: t.amber, lw: 2.5, label: 'q·k grezzo' }, { xs, ys: ys2, color: t.accent, lw: 2.5, label: 'q·k / √d' }], { xlabel: 'valore del punteggio', ylabel: 'frazione dei campioni', ymin: 0, xmin: -lim, xmax: lim, nx: 6 });
+    });
+    root.append(lab('Laboratorio · il peso della dimensione (simulazione con numeri casuali N(0,1))', controls(dkS.el), sqCv, sqOut)); sq();
+
+    root.append(el('h2', { text: 'La maschera causale' }));
+    root.append(el('p', { html: 'In un modello che genera testo, la posizione <var>i</var> non può vedere le posizioni <var>j</var> &gt; <var>i</var>: nel training userebbe la risposta come input. Si somma ai punteggi una matrice <var>M</var> con 0 sotto e sulla diagonale e −∞ sopra: dopo la softmax i pesi del futuro sono esattamente 0. Attiva la casella nel laboratorio 2 e osserva lo stadio "maschera". Grazie a questo trucco una sola passata calcola in parallelo la previsione per <b>tutte</b> le posizioni di una sequenza.' }));
+
+    root.append(details('math', 'La matematica: self-attention completa', 'formule', `
+      <p>Sia <var>X</var> ∈ ℝ<sup><var>T</var>×<var>d</var></sup> la matrice con un token per riga. Con <var>W</var><sub>Q</sub>, <var>W</var><sub>K</sub> ∈ ℝ<sup><var>d</var>×<var>d</var><sub>k</sub></sup> e <var>W</var><sub>V</sub> ∈ ℝ<sup><var>d</var>×<var>d</var><sub>v</sub></sup>:</p>
+      <span class="eq"><var>Q</var> = <var>XW</var><sub>Q</sub>, &nbsp; <var>K</var> = <var>XW</var><sub>K</sub>, &nbsp; <var>V</var> = <var>XW</var><sub>V</sub></span>
+      <span class="eq"><span class="fn">Attention</span>(<var>Q</var>,<var>K</var>,<var>V</var>) = <span class="fn">softmax</span>( ${frac('<var>QK</var><sup>T</sup>', '√<var>d</var><sub>k</sub>')} + <var>M</var> ) <var>V</var></span>
+      <p>Forme: <var>QK</var><sup>T</sup> è <var>T</var>×<var>T</var>, la softmax agisce <b>per riga</b>, il risultato è <var>T</var>×<var>d</var><sub>v</sub>. Per il token <var>i</var>:</p>
+      <span class="eq"><var>z</var><sub>i</sub> = Σ<sub>j≤i</sub> <var>a</var><sub>ij</sub> <var>v</var><sub>j</sub>, &nbsp;&nbsp; <var>a</var><sub>ij</sub> = ${frac('exp(<var>q</var><sub>i</sub>·<var>k</var><sub>j</sub> / √<var>d</var><sub>k</sub>)', 'Σ<sub>l≤i</sub> exp(<var>q</var><sub>i</sub>·<var>k</var><sub>l</sub> / √<var>d</var><sub>k</sub>)')}</span>
+      <p>I pesi <var>a</var><sub>ij</sub> sono non negativi e sommano a 1: <var>z</var><sub>i</sub> sta nell'<i>involucro convesso</i> dei value. L'attention non inventa nulla, <b>mescola</b>; la trasformazione non lineare arriva dall'MLP.</p>
+      <p><b>Solo il prodotto conta.</b> Il punteggio è <var>x</var><sub>i</sub> <var>W</var><sub>Q</sub><var>W</var><sub>K</sub><sup>T</sup> <var>x</var><sub>j</sub><sup>T</sup>: una forma bilineare di rango al più <var>d</var><sub>k</sub>. Analogamente <var>W</var><sub>V</sub> e la proiezione di uscita <var>W</var><sub>O</sub> agiscono insieme come <var>W</var><sub>V</sub><var>W</var><sub>O</sub>.</p>
+      <p><b>Varianza dei punteggi.</b> Se le componenti di <var>q</var>, <var>k</var> sono indipendenti con media 0 e varianza 1: Var(<var>q</var>·<var>k</var>) = Σ<sub>l</sub> Var(<var>q</var><sub>l</sub><var>k</sub><sub>l</sub>) = <var>d</var><sub>k</sub>.</p>
+      <p><b>Gradiente della softmax.</b> Per <var>a</var> = softmax(<var>s</var>): ∂<var>a</var><sub>j</sub>/∂<var>s</var><sub>l</sub> = <var>a</var><sub>j</sub>(δ<sub>jl</sub> − <var>a</var><sub>l</sub>). Se un <var>a</var><sub>j</sub> → 1 (o 0), tutti i termini tendono a 0: saturazione.</p>
+      <p><b>Costo.</b> Tempo <i>O</i>(<var>T</var>²<var>d</var>) e, se si materializza <var>A</var>, memoria <i>O</i>(<var>T</var>²) per head: è il motivo per cui il contesto lungo è costoso. FlashAttention calcola lo stesso risultato a blocchi senza costruire mai l'intera matrice.</p>`));
+    root.append(details('refresh', 'Ripasso: la softmax', 'funzioni', `
+      <p>La softmax trasforma un vettore di numeri reali <var>s</var> in una distribuzione di probabilità: <span class="m">softmax(<var>s</var>)<sub>j</sub> = e<sup><var>s</var><sub>j</sub></sup> / Σ<sub>l</sub> e<sup><var>s</var><sub>l</sub></sup></span>. L'esponenziale rende tutto positivo ed enfatizza le differenze; la divisione normalizza.</p>
+      <p>Esempio: softmax([2, 1, 0]) = [e², e¹, e⁰] / (e²+e¹+e⁰) = [7,39; 2,72; 1] / 11,11 ≈ [0,665; 0,245; 0,090]. Aggiungere una costante a tutti i punteggi non cambia il risultato: per questo nel codice si sottrae il massimo (stabilità numerica).</p>`));
+    root.append(el('h2', { text: 'Verifica rapida' }));
+    root.append(quiz([
+      { q: 'Perché si divide per √<var>d</var><sub>k</sub> prima della softmax?', opts: ['Per rendere i pesi indipendenti dalla lunghezza della frase', 'Per mantenere i punteggi su una scala ≈ 1 ed evitare softmax saturate con gradienti nulli', 'Per far sommare i pesi a 1'], ans: 1, why: 'La varianza di q·k cresce con d_k. Senza scala la softmax diventa quasi one-hot; la normalizzazione a somma 1 la fa già la softmax stessa.' },
+      { q: 'Cosa fa la maschera causale?', opts: ['Azzera i value dei token passati', 'Mette −∞ nei punteggi verso il futuro, così i loro pesi dopo la softmax valgono 0', 'Riduce la dimensione di K'], ans: 1, why: 'exp(−∞) = 0: la posizione i ignora le posizioni successive, e si può addestrare tutta la sequenza in parallelo.' },
+      { q: 'L\'uscita di un token è…', opts: ['il suo value moltiplicato per sé stesso', 'una media pesata dei value di tutti i token visibili', 'la query più la key'], ans: 1, why: 'z_i = Σ_j a_ij v_j, con pesi a_ij ≥ 0 che sommano a 1.' },
+      { q: 'Come cresce il costo dell\'attention con la lunghezza <var>T</var>?', opts: ['Linearmente', 'Quadraticamente', 'Logaritmicamente'], ans: 1, why: 'Ogni token si confronta con tutti gli altri: T×T punteggi.' },
+    ]));
+  },
+});
+
+'use strict';
+/* Module 5 - multi-head attention, head patterns, induction heads */
+
+/* induction circuit: head A moves "previous token" info, head B matches it and copies the following token */
+function inductionCircuit(tokens, beta) {
+  const T = tokens.length, vocab = [...new Set(tokens)];
+  const A1 = tokens.map((_, i) => range(T).map(j => (i === 0 ? j === 0 : j === i - 1) ? 1 : 0));
+  const A2 = tokens.map((_, i) => {
+    const sc = range(T).map(j => {
+      if (j > i) return -Infinity;
+      return (j >= 1 && tokens[j - 1] === tokens[i]) ? beta : 0;
+    });
+    return softmax(sc);
+  });
+  const P = A2.map(row => vocab.map(v => sum(row.map((a, j) => tokens[j] === v ? a : 0))));
+  const matched = tokens.map((_, i) => range(i + 1).some(j => j >= 1 && j !== i && tokens[j - 1] === tokens[i]));
+  return { vocab, A1, A2, P, matched };
+}
+LAB.tests.induction = inductionCircuit;
+
+registerModule({
+  id: 'm5', n: 5, layer: true, title: 'Multi-head', eyebrow: 'molte attention in parallelo', heading: 'Più head, più modi di guardare',
+  lede: 'Una sola attention può imparare un solo tipo di relazione per volta. Con più head in parallelo, ognuna in un sottospazio più piccolo, il modello ne tiene aperte molte insieme, allo stesso costo.',
+  build(root) {
+    root.append(el('div', { html: `
+      <p>In una frase come "il gatto che ha mangiato il pesce dorme", un token può aver bisogno di sapere contemporaneamente: <i>chi è il mio soggetto</i>, <i>qual è la parola subito prima</i>, <i>dove è già comparsa questa parola</i>.
+      Una singola distribuzione di attention non può puntare a tutto insieme. La soluzione è dividere i <var>d</var> canali in <var>h</var> gruppi da <var>d</var><sub>head</sub> = <var>d</var>/<var>h</var>: ogni <b>head</b> ha le sue <var>W</var><sub>Q</sub>, <var>W</var><sub>K</sub>, <var>W</var><sub>V</sub>, calcola la propria attention e produce un'uscita di <var>d</var><sub>head</sub> numeri.
+      Le uscite si concatenano (tornando a <var>d</var> canali) e una matrice finale <var>W</var><sub>O</sub> le rimescola.</p>` }));
+
+    /* ---- Lab A: shapes ---- */
+    const sd = slider({ label: 'd_model', min: 64, max: 1024, step: 64, value: 512, onInput: () => shp() });
+    const sh = slider({ label: 'head (h)', min: 1, max: 16, value: 8, onInput: () => shp() });
+    const sT = slider({ label: 'T (token)', min: 128, max: 8192, step: 128, value: 2048, onInput: () => shp() });
+    const shapeBox = el('div', { class: 'flow' }), shapeOut = el('div', { class: 'readout' });
+    function shp() {
+      const d = sd.get(), h = sh.get(), T = sT.get(), dh = d / h, ok = Number.isInteger(dh);
+      const st = [['Input X', `[T, d] = [${T}, ${d}]`], ['Q, K, V per head', `h × [T, d_head] = ${h} × [${T}, ${ok ? dh : '?'}]`], ['Attention per head', `h × [T, T] = ${h} × [${T}, ${T}]`], ['Uscite delle head', `h × [T, ${ok ? dh : '?'}]`], ['Concat', `[T, h·d_head] = [${T}, ${ok ? d : '?'}]`], ['× W_O', `[T, d] = [${T}, ${d}]`]];
+      shapeBox.replaceChildren(...st.map(([a, b]) => el('div', { class: 'stg', style: 'cursor:default' }, el('b', { text: a }), el('span', { text: b }))));
+      shapeOut.innerHTML = ok
+        ? `d_head = ${d}/${h} = <b>${dh}</b> · parametri attention per layer: <b>4d² = ${human(4 * d * d)}</b> (non dipendono da h) · entrate delle matrici di attention: <b>h·T² = ${human(h * T * T)}</b> per layer (in fp16 ≈ ${(h * T * T * 2 / 1e9).toFixed(2)} GB se materializzate)`
+        : '<span style="color:var(--rose)">d_model deve essere divisibile per h: scegli un altro numero di head.</span>';
+    }
+    root.append(lab('Laboratorio · forme e costi', controls(sd.el, sh.el, sT.el), shapeBox, shapeOut)); shp();
+    root.append(el('p', { html: 'Raddoppiare le head dimezza <var>d</var><sub>head</sub> e lascia invariati parametri e FLOP. Cambia solo quanta memoria occupano le matrici di attention (e, in generazione, la <b>KV cache</b>: per questo i modelli recenti condividono K e V tra più head con <i>grouped-query attention</i>).' }));
+
+    /* ---- Lab B: head patterns ---- */
+    const SENT = ['il', 'gatto', 'che', 'ha', 'mangiato', 'il', 'pesce', 'dorme'], N = SENT.length;
+    const headMat = fn => SENT.map((_, i) => {
+      const row = new Array(N).fill(0); let used = 0;
+      for (const [j, w] of fn(i)) { row[j] += w; used += w; }
+      const left = Math.max(0, 1 - used); for (let j = 0; j <= i; j++) row[j] += left / (i + 1);
+      return row;
+    });
+    const SUBJ = { 3: [[1, 0.85]], 4: [[1, 0.45], [3, 0.4]], 6: [[4, 0.85]], 7: [[1, 0.85]] };
+    const HEADS = [
+      { name: 'Token precedente', color: 'accent', M: headMat(i => [[i === 0 ? 0 : i - 1, 0.85]]), why: 'Ogni token guarda quello subito prima. Serve a copiare informazione "di vicinato": è un mattone di molti circuiti.' },
+      { name: 'Stessa parola', color: 'amber', M: headMat(i => { const js = range(i).filter(j => SENT[j] === SENT[i]); return js.length ? [[js[js.length - 1], 0.85]] : [[i, 0.6]]; }), why: 'Il secondo "il" guarda il primo. Utile per riconoscere ripetizioni.' },
+      { name: 'Verbo → soggetto', color: 'teal', M: headMat(i => SUBJ[i] || [[i, 0.6]]), why: 'I verbi cercano il loro soggetto, "pesce" cerca il suo verbo. È il tipo di relazione sintattica che le head sembrano poter rappresentare.' },
+      { name: 'Attention sink', color: 'rose', M: headMat(i => [[0, i === 0 ? 0.9 : 0.7]]), why: 'Quasi tutto il peso va al primo token, che funge da "parcheggio" quando nessuna informazione è rilevante. Fenomeno osservato nei modelli reali.' },
+    ];
+    let hsel = 2, qsel = 7;
+    const arcCv = canvasEl(230), matCv = canvasEl(190), headInfo = el('p', { class: 'readout' });
+    const arcs = setupCanvas(arcCv, (ctx, w, h, t) => {
+      const H = HEADS[hsel], col = t[H.color], xs = SENT.map((_, i) => 40 + i * (w - 80) / (N - 1)), base = h - 52;
+      for (let i = 0; i < N; i++) {
+        for (let j = 0; j < i; j++) {
+          const wgt = H.M[i][j]; if (wgt < 0.12) continue;
+          ctx.strokeStyle = rgba(col, i === qsel ? Math.min(1, 0.25 + wgt) : 0.16 + 0.12 * wgt); ctx.lineWidth = 1 + wgt * (i === qsel ? 6 : 3);
+          ctx.beginPath(); ctx.moveTo(xs[i], base); ctx.quadraticCurveTo((xs[i] + xs[j]) / 2, base - 24 - 20 * (i - j), xs[j], base); ctx.stroke();
+        }
+        const self = H.M[i][i]; if (self > 0.12) { ctx.strokeStyle = rgba(col, i === qsel ? 0.9 : 0.25); ctx.lineWidth = 1 + 3 * self; ctx.beginPath(); ctx.arc(xs[i], base - 8, 7, 0, 7); ctx.stroke(); }
+        ctx.fillStyle = i === qsel ? t.ink : t.muted; ctx.beginPath(); ctx.arc(xs[i], base + 4, 3.5, 0, 7); ctx.fill();
+        text(ctx, SENT[i], xs[i], base + 24, { align: 'center', color: i === qsel ? t.ink : t.muted, size: 12, weight: i === qsel ? 700 : 500, sans: true });
+      }
+      text(ctx, `head "${H.name}" · archi = dal token (query) a quelli che guarda (key) · clicca una parola per evidenziarla`, 10, 16, { color: t.muted, size: 11 });
+    });
+    arcCv.addEventListener('click', ev => {
+      const rc = arcCv.getBoundingClientRect(), x = ev.clientX - rc.left; let best = 0, bd = 1e9;
+      SENT.forEach((_, i) => { const d = Math.abs(x - (40 + i * (rc.width - 80) / (N - 1))); if (d < bd) { bd = d; best = i; } });
+      qsel = best; arcs.redraw();
+    });
+    const mats = setupCanvas(matCv, (ctx, w, h, t) => {
+      const gap = 14, S = Math.min((w - gap * 3 - 24) / 4, h - 46), cell = S / N;
+      HEADS.forEach((H, k) => {
+        const x = 12 + k * (S + gap), y = 10;
+        heat(ctx, H.M, x, y, cell, cell, { t, color: t[H.color], vmin: 0, vmax: 1 });
+        if (k === hsel) { ctx.strokeStyle = t.ink; ctx.lineWidth = 2; ctx.strokeRect(x - 2, y - 2, S + 3, S + 3); }
+        text(ctx, H.name, x + S / 2, y + S + 18, { align: 'center', color: k === hsel ? t.ink : t.muted, size: 11, weight: k === hsel ? 700 : 500, sans: true });
+      });
+    });
+    matCv.addEventListener('click', ev => {
+      const rc = matCv.getBoundingClientRect(), x = ev.clientX - rc.left, gap = 14, S = Math.min((rc.width - gap * 3 - 24) / 4, rc.height - 46);
+      const k = Math.floor((x - 12 + gap / 2) / (S + gap)); if (k >= 0 && k < HEADS.length) { hsel = k; upd(); }
+    });
+    const headBtns = HEADS.map((H, k) => button(H.name, () => { hsel = k; upd(); }));
+    function upd() { headBtns.forEach((b, k) => b.setAttribute('aria-pressed', String(k === hsel))); headInfo.innerHTML = `<b>${HEADS[hsel].name}.</b> ${HEADS[hsel].why}`; arcs.redraw(); mats.redraw(); }
+    root.append(lab('Laboratorio · quattro head sulla stessa frase', controls(...headBtns), arcCv, matCv, headInfo,
+      el('div', { class: 'note', html: '<b>Onestà</b>Questi quattro pattern sono <b>scritti a mano</b> per mostrare che cosa una head <i>può</i> fare. In un modello vero le head nascono dall\'addestramento, sono spesso meno nette, e molte svolgono compiti che non sappiamo nominare. Lo studio di quali head fanno cosa è un filone attivo di ricerca (interpretabilità meccanicistica).' })));
+    upd();
+
+    /* ---- Lab C: induction ---- */
+    root.append(el('h2', { text: 'Un circuito vero: le induction head' }));
+    root.append(el('p', { html: `Due head in due layer diversi, <b>composte</b>, riescono a fare qualcosa di sorprendente: se nel testo compare "… <i>A B</i> … <i>A</i>", prevedono che il prossimo token sia <i>B</i>. È copia-incolla guidato dal contesto, ed è considerato uno dei meccanismi alla base dell'<i>in-context learning</i> (Olsson e colleghi, Anthropic, 2022).` }));
+    root.append(el('ol', { class: 'prose', html: `
+      <li><b>Head 1 (previous-token head)</b>, layer precedente: ogni posizione <var>j</var> guarda <var>j</var> − 1 e scrive nel proprio residual "il token prima di me era <i>X</i>".</li>
+      <li><b>Head 2 (induction head)</b>, layer successivo: la query della posizione <var>i</var> è "io sono <i>A</i>"; la key della posizione <var>j</var> contiene "il token prima di me era <i>X</i>". Il punteggio è alto quando <i>X</i> = <i>A</i>: cioè in tutti i punti che <b>seguono</b> una precedente occorrenza di <i>A</i>. Il value copia il token a <var>j</var>: proprio <i>B</i>.</li>` }));
+    const defTxt = 'mario rossi lavora a milano . anna bianchi vive a roma . mario';
+    const inp = el('input', { type: 'text', id: 'ind-in', value: defTxt }); inp.style.width = '100%';
+    const sb = slider({ label: 'nitidezza β', min: 0, max: 12, step: 0.5, value: 8, onInput: () => ind() });
+    const indCv = canvasEl(300), indOut = el('div', { class: 'readout' });
+    let IC = null, toks = [], isel = 0;
+    function ind() {
+      toks = inp.value.toLowerCase().split(/\s+/).filter(Boolean).slice(0, 16);
+      if (toks.length < 2) { indOut.textContent = 'Scrivi almeno due token separati da spazi.'; IC = null; indC.redraw(); return; }
+      IC = inductionCircuit(toks, sb.get()); isel = clamp(isel, 0, toks.length - 1);
+      const i = isel, pr = IC.P[i], order = range(IC.vocab.length).sort((a, b) => pr[b] - pr[a]).slice(0, 4);
+      indOut.innerHTML = `Posizione <b>${i} "${toks[i]}"</b>: ` + (IC.matched[i]
+        ? `la head 2 trova ${range(i + 1).filter(j => j >= 1 && j !== i && toks[j - 1] === toks[i]).length} occorrenza/e precedente/i di "${toks[i]}" e copia ciò che la seguiva → previsione: ` + order.map(k => `<b>${IC.vocab[k]}</b> ${f2(pr[k] * 100, 0)}%`).join(' · ')
+        : `<span class="muted">"${toks[i]}" non è mai comparso prima: nessuna corrispondenza, l'attention si distribuisce quasi uniformemente e la head non ha una previsione utile.</span>`);
+      indC.redraw();
+    }
+    const indC = setupCanvas(indCv, (ctx, w, h, t) => {
+      if (!IC) return;
+      const T = toks.length, gap = 40, S = Math.min((w - gap - 20) / 2, h - 80), cell = Math.min(S / T, 30), xs = [30 + 22, 30 + S + gap + 22];
+      const left = [Math.min(46, 30), 30];
+      [[IC.A1, 'Head 1 · token precedente', t.accent], [IC.A2, 'Head 2 · induction', t.amber]].forEach(([M, name, c], k) => {
+        const x = k === 0 ? 40 : 40 + T * cell + gap + 40, y = 46;
+        heat(ctx, M.map(r => r.map(v => v)), x, y, cell, cell, { t, color: c, vmin: 0, vmax: 1, rows: toks, cols: toks.map((s, j) => j % 1 === 0 ? s.slice(0, 4) : ''), hi: isel });
+        text(ctx, name, x, 22, { color: c, size: 12, sans: true, weight: 700 });
+        ctx.strokeStyle = t.ink; ctx.lineWidth = 1.5; ctx.strokeRect(x - 1, y + isel * cell - 1, T * cell + 1, cell + 1);
+      });
+      text(ctx, 'riga = posizione che guarda · colonna = posizione guardata · clicca una riga per cambiare posizione', 10, h - 10, { color: t.muted, size: 10 });
+    });
+    indCv.addEventListener('click', ev => {
+      if (!toks.length) return; const rc = indCv.getBoundingClientRect(), y = ev.clientY - rc.top, S = Math.min((rc.width - 40 - 20) / 2, rc.height - 80), cell = Math.min(S / toks.length, 30), i = Math.floor((y - 46) / cell);
+      if (i >= 0 && i < toks.length) { isel = i; ind(); }
+    });
+    inp.addEventListener('input', () => { isel = Math.max(0, inp.value.trim().split(/\s+/).length - 1); ind(); });
+    root.append(lab('Laboratorio · induction head', el('p', { text: 'Modifica la sequenza (token separati da spazi). Posizionati sull\'ultimo token per vedere la previsione per "copia-incolla".' }), inp, controls(sb.el, button('Esempio con lettere', () => { inp.value = 'a b c d e a b c d e a b'; isel = 11; ind(); })), indCv, indOut));
+    isel = defTxt.split(' ').length - 1; ind();
+
+    root.append(details('math', 'La matematica: multi-head attention', 'formule', `
+      <span class="eq"><span class="fn">head</span><sub><var>h</var></sub> = <span class="fn">Attention</span>(<var>XW</var><sub>Q</sub><sup>(<var>h</var>)</sup>, <var>XW</var><sub>K</sub><sup>(<var>h</var>)</sup>, <var>XW</var><sub>V</sub><sup>(<var>h</var>)</sup>) &nbsp; ∈ ℝ<sup><var>T</var>×<var>d</var><sub>head</sub></sup></span>
+      <span class="eq"><span class="fn">MultiHead</span>(<var>X</var>) = <span class="fn">Concat</span>(<span class="fn">head</span><sub>1</sub>, …, <span class="fn">head</span><sub><var>h</var></sub>) <var>W</var><sub>O</sub> = Σ<sub><var>h</var></sub> <span class="fn">head</span><sub><var>h</var></sub> <var>W</var><sub>O</sub><sup>(<var>h</var>)</sup></span>
+      <p>La seconda uguaglianza (<var>W</var><sub>O</sub> spezzata per righe in blocchi <var>d</var><sub>head</sub>×<var>d</var>) dice che <b>ogni head scrive nel residual stream una propria correzione additiva</b>: il contributo di una head può essere studiato da solo.</p>
+      <p><b>Circuito di induzione.</b> Nel secondo layer la key a <var>j</var> è funzione di <var>x</var><sub>j−1</sub> grazie alla head 1 (<i>K-composition</i>). Se <i>e</i>(·) è l'identità del token, il punteggio ideale è <var>s</var><sub>ij</sub> = β·[<i>e</i>(<var>t</var><sub>i</sub>) = <i>e</i>(<var>t</var><sub>j−1</sub>)], e la previsione è <span class="m"><var>P</var>(<var>v</var> | <var>i</var>) = Σ<sub>j≤i</sub> <var>a</var><sub>ij</sub> [<var>t</var><sub>j</sub> = <var>v</var>]</span>. Con β grande la softmax tende a un one-hot sulle posizioni che seguono una ripetizione.</p>
+      <p><b>Varianti.</b> <i>Multi-Query</i> (una sola K/V per tutte le head) e <i>Grouped-Query</i> (K/V condivise per gruppi di head) riducono la KV cache di un fattore <var>h</var>/<var>g</var> con piccola perdita di qualità.</p>`));
+    root.append(el('h2', { text: 'Verifica rapida' }));
+    root.append(quiz([
+      { q: 'Se raddoppio il numero di head mantenendo <var>d</var> fisso, i parametri dell\'attention…', opts: ['raddoppiano', 'restano uguali', 'si dimezzano'], ans: 1, why: 'Le matrici restano d×d in totale: cambia solo come i canali vengono suddivisi (d_head = d/h).' },
+      { q: 'Cosa deve fare la <i>previous-token head</i> perché l\'induction head funzioni?', opts: ['Copiare in ogni posizione l\'identità del token precedente', 'Annullare la maschera causale', 'Moltiplicare i punteggi per √d'], ans: 0, why: 'Così la key di ogni posizione contiene "il token prima di me era X", e la seconda head può cercare le posizioni che seguono una certa occorrenza.' },
+      { q: 'Perché una head potrebbe fare "attention sink" sul primo token?', opts: ['Perché è il più importante', 'Perché la softmax obbliga a distribuire peso totale 1 anche quando nulla è rilevante: serve un posto dove "parcheggiarlo"', 'È un errore di implementazione'], ans: 1, why: 'I pesi devono sommare a 1; se nessuna posizione è interessante, un token neutro assorbe il peso senza trasmettere informazione utile.' },
+    ]));
+  },
+});
+
+'use strict';
+/* Module 6 - the rest of the transformer block: MLP, residual stream, normalization */
+const erf = x => { const s = Math.sign(x), a = Math.abs(x), t = 1 / (1 + 0.3275911 * a); return s * (1 - (((((1.061405429 * t - 1.453152027) * t) + 1.421413741) * t - 0.284496736) * t + 0.254829592) * t * Math.exp(-a * a)); };
+const ACT = {
+  relu: { name: 'ReLU', f: z => z > 0 ? z : 0, d: z => z > 0 ? 1 : 0 },
+  gelu: { name: 'GELU', f: z => z * 0.5 * (1 + erf(z / Math.SQRT2)), d: z => 0.5 * (1 + erf(z / Math.SQRT2)) + z * Math.exp(-z * z / 2) / Math.sqrt(2 * Math.PI) },
+  silu: { name: 'SiLU', f: z => z / (1 + Math.exp(-z)), d: z => { const s = 1 / (1 + Math.exp(-z)); return s * (1 + z * (1 - s)); } },
+};
+/* one-hidden-layer network fitted to a 1-D function with Adam (a miniature of the transformer MLP) */
+class Fit1D {
+  constructor(H, act, target, seed = 1) {
+    const r = rng(seed); this.H = H; this.act = ACT[act]; this.t = 0;
+    this.xs = range(65).map(i => -2 + 4 * i / 64); this.ts = this.xs.map(target);
+    const w = range(H).map(i => (i % 2 ? 1 : -1) * (0.8 + 0.6 * r())), kink = i => -1.8 + 3.6 * (i + 0.5) / H;
+    this.th = Float64Array.from([...w, ...w.map((wi, i) => -wi * kink(i)), ...range(H).map(() => r.gauss() * 0.3), 0]);
+    this.m = new Float64Array(this.th.length); this.v = new Float64Array(this.th.length);
+  }
+  pred(x) { const { H, th } = this; let y = th[3 * H]; for (let i = 0; i < H; i++) y += th[2 * H + i] * this.act.f(th[i] * x + th[H + i]); return y; }
+  parts(x) { const { H, th } = this; return range(H).map(i => th[2 * H + i] * this.act.f(th[i] * x + th[H + i])); }
+  loss() { return sum(this.xs.map((x, k) => (this.pred(x) - this.ts[k]) ** 2)) / this.xs.length; }
+  grad() {
+    const { H, th } = this, g = new Float64Array(th.length), N = this.xs.length;
+    this.xs.forEach((x, k) => {
+      const dy = 2 * (this.pred(x) - this.ts[k]) / N; g[3 * H] += dy;
+      for (let i = 0; i < H; i++) { const z = th[i] * x + th[H + i], da = this.act.d(z); g[2 * H + i] += dy * this.act.f(z); g[i] += dy * th[2 * H + i] * da * x; g[H + i] += dy * th[2 * H + i] * da; }
+    });
+    return g;
+  }
+  step(lr = 0.03) {
+    const g = this.grad(), b1 = 0.9, b2 = 0.999; this.t++;
+    for (let i = 0; i < g.length; i++) {
+      this.m[i] = b1 * this.m[i] + (1 - b1) * g[i]; this.v[i] = b2 * this.v[i] + (1 - b2) * g[i] * g[i];
+      this.th[i] -= lr * (this.m[i] / (1 - b1 ** this.t)) / (Math.sqrt(this.v[i] / (1 - b2 ** this.t)) + 1e-8);
+    }
+  }
+}
+/* mean log10 of the gradient norm through L layers, with and without a skip connection */
+function gradFlow(L, s, trials = 12, d = 16, seed = 1) {
+  const plain = new Array(L + 1).fill(0), res = new Array(L + 1).fill(0);
+  for (let tr = 0; tr < trials; tr++) {
+    const r = rng(seed * 1000 + tr); let g = range(d).map(() => r.gauss()); const n0 = norm(g); g = g.map(v => v / n0);
+    let gp = g.slice(), gr = g.slice();
+    for (let l = 1; l <= L; l++) {
+      const W = range(d).map(() => range(d).map(() => r.gauss() * s / Math.sqrt(d)));
+      gp = W.map(row => dot(row, gp)); gr = gr.map((v, i) => v + dot(W[i], gr));
+      plain[l] += Math.log10(norm(gp) + 1e-300) / trials; res[l] += Math.log10(norm(gr)) / trials;
+    }
+  }
+  return { plain, res };
+}
+function normLayer(x, gamma, beta, kind = 'layer', eps = 1e-5) {
+  const n = x.length;
+  if (kind === 'rms') { const r = Math.sqrt(sum(x.map(v => v * v)) / n + eps); return x.map(v => v / r * gamma); }
+  const mu = sum(x) / n, va = sum(x.map(v => (v - mu) ** 2)) / n; return x.map(v => (v - mu) / Math.sqrt(va + eps) * gamma + beta);
+}
+Object.assign(LAB.tests, { Fit1D, ACT, gradFlow, normLayer });
+
+registerModule({
+  id: 'm6', n: 6, layer: true, title: 'MLP, residual, norm', eyebrow: 'il resto del blocco', heading: 'Cosa c\'è nel blocco oltre all\'attention',
+  lede: 'L\'attention sposta informazione tra token. L\'MLP la elabora, il residual stream la conserva, la normalizzazione tiene i numeri in un intervallo sano. Insieme rendono possibile impilare decine di layer.',
+  build(root) {
+    root.append(el('div', { html: `
+      <p>Un blocco transformer (nella variante <i>pre-norm</i>, la più diffusa oggi) fa due cose in sequenza, ciascuna avvolta nello stesso schema "normalizza, trasforma, <b>somma all'ingresso</b>":</p>` }));
+    const parts = [['x', 'ingresso [T, d]'], ['LayerNorm', 'normalizza ogni token'], ['Attention', 'mescola tra token'], ['⊕', 'somma al residual'], ['LayerNorm', 'normalizza'], ['MLP', 'elabora ogni token'], ['⊕', 'somma al residual'], ['x′', 'uscita [T, d]']];
+    root.append(lab('Schema · un blocco', el('div', { class: 'flow' }, parts.map(([a, b]) => el('div', { class: 'stg', style: 'cursor:default' }, el('b', { text: a }), el('span', { text: b })))),
+      math('<var>x</var>′ = <var>x</var> + <span class="fn">Attn</span>(<span class="fn">LN</span>(<var>x</var>)), &nbsp;&nbsp; <var>x</var>″ = <var>x</var>′ + <span class="fn">MLP</span>(<span class="fn">LN</span>(<var>x</var>′))')));
+    root.append(el('p', { html: 'Il flusso <var>x</var> che attraversa tutto il blocco (e tutti i blocchi) si chiama <b>residual stream</b>: una specie di bus condiviso su cui ogni attention e ogni MLP leggono e scrivono <i>correzioni additive</i>. Il token entra come embedding e esce come vettore da cui si leggono i logit.' }));
+
+    /* ---- MLP fit lab ---- */
+    root.append(el('h2', { text: 'L\'MLP: elaborare token per token' }));
+    root.append(el('p', { html: 'L\'MLP agisce su ogni posizione <b>separatamente</b>: espande il vettore da <var>d</var> a <var>d</var><sub>ff</sub> (di solito 4<var>d</var>), applica una non-linearità e riproietta a <var>d</var>. Senza non-linearità, due matrici in fila sarebbero equivalenti a una sola. Per vedere che cosa significa, qui sotto una versione ridotta (1 ingresso, 1 uscita) impara a riprodurre una curva: <b>ogni neurone ReLU è una "piega"</b> e la rete somma pieghe.' }));
+    const targets = { 'sin(2x)': x => Math.sin(2 * x), '|x|': x => Math.abs(x), 'gradino': x => x > 0 ? 1 : 0, 'x³ − x': x => x * x * x - x };
+    let tgt = 'sin(2x)', act = 'relu', fit = null, steps = 0;
+    const cv = canvasEl(280), info = el('div', { class: 'readout' });
+    const sH = slider({ label: 'neuroni', min: 1, max: 16, value: 5, onInput: () => reset() }), sLR = slider({ label: 'learning rate', min: 0.005, max: 0.1, step: 0.005, value: 0.03, fmt: v => v.toFixed(3) });
+    let showParts = true;
+    const c = setupCanvas(cv, (ctx, w, h, t) => {
+      if (!fit) return;
+      const S = [{ xs: fit.xs, ys: fit.ts, color: t.muted, dash: [6, 4], lw: 2, label: 'funzione da imparare' }];
+      if (showParts) { const P = fit.xs.map(x => fit.parts(x)); for (let i = 0; i < fit.H; i++) S.push({ xs: fit.xs, ys: P.map(p => p[i]), color: rgba(t.teal, 0.45), lw: 1 }); }
+      S.push({ xs: fit.xs, ys: fit.xs.map(x => fit.pred(x)), color: t.accent, lw: 3, label: 'rete' });
+      const all = fit.ts.concat(fit.xs.map(x => fit.pred(x))), lo = Math.min(...all), hi = Math.max(...all), pad = (hi - lo) * 0.15 + 0.2;
+      chart(ctx, w, h, t, S, { xmin: -2, xmax: 2, ymin: Math.max(Math.min(lo - pad, -0.5), -8), ymax: Math.min(Math.max(hi + pad, 1.2), 8), xlabel: 'ingresso x', ylabel: 'uscita', nx: 4 });
+    });
+    function reset() { fit = new Fit1D(sH.get(), act, targets[tgt], 3); steps = 0; lp.stop(); playBtn.textContent = 'Allena'; refresh(); }
+    function refresh() { info.innerHTML = `passi <b>${steps}</b> · loss (MSE) <b>${fit.loss().toFixed(4)}</b> · parametri <b>${3 * fit.H + 1}</b> (pesi in, bias, pesi out, bias finale)`; c.redraw(); }
+    const lp = loop(cv, () => { for (let k = 0; k < 8; k++) { fit.step(sLR.get()); steps++; } refresh(); if (steps >= 4000) { lp.stop(); playBtn.textContent = 'Allena'; } });
+    const playBtn = button('Allena', () => { if (lp.running) { lp.stop(); playBtn.textContent = 'Allena'; } else { lp.start(); playBtn.textContent = 'Pausa'; } }, 'primary');
+    root.append(lab('Laboratorio · una MLP che impara una curva',
+      controls(select(Object.keys(targets).map(k => [k, k]), tgt, v => { tgt = v; reset(); }, 'funzione'), select(Object.keys(ACT).map(k => [k, ACT[k].name]), act, v => { act = v; reset(); }, 'attivazione'), sH.el, sLR.el),
+      controls(playBtn, button('Reset', reset), checkbox('mostra il contributo di ogni neurone', true, v => { showParts = v; c.redraw(); })), cv, info,
+      el('p', { html: 'Con 1-2 neuroni la rete può solo tracciare una spezzata grossolana; con 8-16 segue bene una curva liscia. Prova il <b>gradino</b>: una funzione discontinua si approssima con pendenze molto ripide. Confronta ReLU con GELU/SiLU, la variante "smussata" usata nei LLM.' })));
+    reset();
+    root.append(el('p', { html: `Nel modello vero i neuroni sono migliaia per layer e lavorano su vettori di <var>d</var> numeri, ma l'idea è la stessa. Le ricerche di interpretabilità suggeriscono di leggere l'MLP come una <b>memoria chiave-valore</b>: ogni neurone si accende quando riconosce un certo pattern nell'ingresso (la "chiave") e scrive nel residual stream una certa direzione (il "valore"). Dato che l'MLP pesa circa 2/3 dei parametri di un blocco, è plausibile che molte conoscenze fattuali risiedano lì, mentre l'attention instrada l'informazione.` }));
+
+    /* ---- residual lab ---- */
+    root.append(el('h2', { text: 'Il residual: perché si possono impilare tanti layer' }));
+    root.append(el('p', { html: `Senza la somma <var>x</var> + …, il segnale (e il gradiente nel training) attraversa ogni layer moltiplicandosi per la sua matrice. Se ogni matrice "amplifica" di un fattore <var>s</var> &lt; 1, dopo <var>L</var> layer resta <var>s</var><sup><var>L</var></sup>: il gradiente svanisce. Con il residual, la derivata di ogni layer è <b>1 + qualcosa</b>, quindi esiste sempre un percorso diretto con guadagno 1. Qui sotto un esperimento numerico con matrici casuali (16 dimensioni).` }));
+    const sL = slider({ label: 'layer', min: 2, max: 80, value: 40, onInput: () => rf() }), sS = slider({ label: 's (guadagno per layer)', min: 0.05, max: 1.2, step: 0.05, value: 0.5, fmt: v => v.toFixed(2), onInput: () => rf() });
+    let seed = 1; const rcv = canvasEl(240), rOut = el('div', { class: 'readout' });
+    let GF = null;
+    const rc = setupCanvas(rcv, (ctx, w, h, t) => {
+      if (!GF) return; const xs = range(GF.plain.length);
+      chart(ctx, w, h, t, [{ xs, ys: GF.plain, color: t.amber, lw: 3, label: 'senza residual' }, { xs, ys: GF.res, color: t.accent, lw: 3, label: 'con residual' }, { xs, ys: xs.map(() => 0), color: t.muted, dash: [4, 4], lw: 1 }],
+        { xlabel: 'profondità (layer attraversati)', ylabel: 'log₁₀ ‖gradiente‖', xmin: 0, xmax: sL.get(), yfmt: v => (v > 0 ? '+' : '') + Math.round(v), nx: 4 });
+    });
+    function rf() {
+      const L = sL.get(), s = sS.get(); GF = gradFlow(L, s, 12, 16, seed);
+      rOut.innerHTML = `Dopo ${L} layer: senza residual <b>10<sup>${f2(GF.plain[L], 1)}</sup></b> · con residual <b>10<sup>${f2(GF.res[L], 1)}</sup></b>` +
+        (GF.res[L] > 6 ? '<br><span style="color:var(--rose)">Con guadagno grande anche il residual esplode: per questo servono normalizzazione e inizializzazioni scalate con la profondità.</span>' : '');
+      rc.redraw();
+    }
+    root.append(lab('Laboratorio · flusso del gradiente in profondità', controls(sL.el, sS.el, button('Nuovo campione casuale', () => { seed++; rf(); })), rcv, rOut)); rf();
+
+    /* ---- layernorm lab ---- */
+    root.append(el('h2', { text: 'La normalizzazione' }));
+    root.append(el('p', { html: 'Ogni layer somma contributi al residual stream, quindi la scala dei numeri tende a crescere e a variare molto da token a token. <b>LayerNorm</b> prende il vettore di <b>un solo token</b>, lo ricentra (media 0) e lo riscala (deviazione standard 1), poi applica un guadagno <var>γ</var> e un offset <var>β</var> appresi. <b>RMSNorm</b> (Llama e altri) salta la sottrazione della media. Muovi i valori e osserva.' }));
+    let xv = [2.2, -0.5, 1.4, 3.1, -1.2, 0.4, 2.7, 0.9], kind = 'layer';
+    const sl = xv.map((v, i) => slider({ label: 'x' + i, min: -6, max: 6, step: 0.1, value: v, fmt: q => q.toFixed(1), onInput: q => { xv[i] = q; ln(); } }));
+    const sg = slider({ label: 'γ', min: 0.2, max: 3, step: 0.1, value: 1, fmt: v => v.toFixed(1), onInput: () => ln() }), sbeta = slider({ label: 'β', min: -2, max: 2, step: 0.1, value: 0, fmt: v => v.toFixed(1), onInput: () => ln() });
+    const lcv = canvasEl(230), lOut = el('div', { class: 'readout' });
+    let LN = null;
+    const lc = setupCanvas(lcv, (ctx, w, h, t) => {
+      if (!LN) return; const n = xv.length, half = (w - 20) / 2, m = Math.max(6, ...xv.map(Math.abs), ...LN.y.map(Math.abs)), y0 = h / 2 + 4, sc = (h / 2 - 28) / m;
+      [[xv, 'ingresso x', t.amber, 6], [LN.y, kind === 'layer' ? 'uscita LayerNorm' : 'uscita RMSNorm', t.accent, 6]].forEach(([arr, name, col], k) => {
+        const x0 = 10 + k * (half + 10), bw = (half - 20) / n;
+        ctx.strokeStyle = t.muted; ctx.lineWidth = 1; ctx.beginPath(); ctx.moveTo(x0, y0); ctx.lineTo(x0 + half - 10, y0); ctx.stroke();
+        arr.forEach((v, i) => { ctx.fillStyle = col; ctx.fillRect(x0 + i * bw + 3, y0, bw - 6, -v * sc); text(ctx, String(i), x0 + i * bw + bw / 2, h - 6, { align: 'center', color: t.muted, size: 10 }); });
+        const mu = sum(arr) / n; ctx.strokeStyle = t.rose; ctx.setLineDash([5, 4]); ctx.beginPath(); ctx.moveTo(x0, y0 - mu * sc); ctx.lineTo(x0 + half - 10, y0 - mu * sc); ctx.stroke(); ctx.setLineDash([]);
+        text(ctx, name, x0, 16, { color: col, size: 12, sans: true, weight: 700 });
+      });
+      text(ctx, 'linea rosa = media', w - 8, 16, { color: t.rose, size: 10, align: 'right' });
+    });
+    function ln() {
+      const g = sg.get(), b = sbeta.get(), y = normLayer(xv, g, b, kind), st = a => { const mu = sum(a) / a.length; return [mu, Math.sqrt(sum(a.map(v => (v - mu) ** 2)) / a.length)]; };
+      LN = { y }; const [m1, s1] = st(xv), [m2, s2] = st(y);
+      lOut.innerHTML = `ingresso: media <b>${f2(m1)}</b>, dev. std <b>${f2(s1)}</b> · uscita: media <b>${f2(m2)}</b>, dev. std <b>${f2(s2)}</b>` + (kind === 'layer' ? ` (attese β = ${f2(b)} e γ = ${f2(g)})` : ` (RMSNorm non toglie la media; la scala RMS vale γ = ${f2(g)})`);
+      lc.redraw();
+    }
+    const scaleBtn = button('Moltiplica x per 3', () => { xv = xv.map(v => clamp(v * 3, -6, 6)); sl.forEach((s, i) => s.set(xv[i])); ln(); });
+    root.append(lab('Laboratorio · LayerNorm e RMSNorm', controls(select([['layer', 'LayerNorm'], ['rms', 'RMSNorm']], kind, v => { kind = v; ln(); }, 'tipo'), sg.el, sbeta.el, scaleBtn, button('Reset', () => { xv = [2.2, -0.5, 1.4, 3.1, -1.2, 0.4, 2.7, 0.9]; sl.forEach((s, i) => s.set(xv[i])); ln(); })),
+      el('div', { class: 'controls' }, sl.map(s => s.el)), lcv, lOut,
+      el('p', { html: 'Prova "Moltiplica x per 3" (i valori sono limitati a ±6 per la grafica): l\'uscita non cambia. La normalizzazione rende il blocco <b>insensibile alla scala</b> del residual stream, che può così crescere con la profondità senza far saltare i layer successivi.' })));
+    ln();
+
+    root.append(details('math', 'La matematica: MLP, normalizzazione e residual', 'formule', `
+      <p><b>MLP classica.</b> <span class="m"><span class="fn">MLP</span>(<var>x</var>) = <var>W</var><sub>2</sub> <var>σ</var>(<var>W</var><sub>1</sub><var>x</var> + <var>b</var><sub>1</sub>) + <var>b</var><sub>2</sub></span>, con <var>W</var><sub>1</sub> ∈ ℝ<sup><var>d</var><sub>ff</sub>×<var>d</var></sup>, <var>W</var><sub>2</sub> ∈ ℝ<sup><var>d</var>×<var>d</var><sub>ff</sub></sup>. Equivale a Σ<sub>i</sub> <var>σ</var>(<var>k</var><sub>i</sub>·<var>x</var> + <var>b</var><sub>i</sub>) <var>v</var><sub>i</sub>, dove <var>k</var><sub>i</sub> è la riga <var>i</var> di <var>W</var><sub>1</sub> e <var>v</var><sub>i</sub> la colonna <var>i</var> di <var>W</var><sub>2</sub>.</p>
+      <p><b>Attivazioni.</b> ReLU(<var>z</var>) = max(0, <var>z</var>). GELU(<var>z</var>) = <var>z</var>·Φ(<var>z</var>), con Φ la funzione di ripartizione della normale. SiLU(<var>z</var>) = <var>z</var>·σ(<var>z</var>) con σ la sigmoide. <b>SwiGLU</b> (Llama, ecc.): <span class="m"><span class="fn">FFN</span>(<var>x</var>) = (<span class="fn">SiLU</span>(<var>xW</var><sub>g</sub>) ⊙ <var>xW</var><sub>u</sub>) <var>W</var><sub>d</sub></span>: una porta moltiplicativa che richiede tre matrici invece di due (per questo <var>d</var><sub>ff</sub> è di solito ~8<var>d</var>/3 invece di 4<var>d</var>, a parità di parametri).</p>
+      <p><b>LayerNorm.</b> Per un vettore <var>x</var> ∈ ℝ<sup><var>d</var></sup>:</p>
+      <span class="eq"><span class="fn">LN</span>(<var>x</var>) = <var>γ</var> ⊙ ${frac('<var>x</var> − <var>μ</var>', '√(<var>σ</var>² + ε)')} + <var>β</var>, &nbsp; <var>μ</var> = ${frac('1', '<var>d</var>')}Σ<sub>i</sub><var>x</var><sub>i</sub>, &nbsp; <var>σ</var>² = ${frac('1', '<var>d</var>')}Σ<sub>i</sub>(<var>x</var><sub>i</sub> − <var>μ</var>)²</span>
+      <p><b>RMSNorm:</b> <span class="m"><var>x</var><sub>i</sub> / √(${frac('1', '<var>d</var>')}Σ<var>x</var><sub>j</sub>² + ε) · <var>γ</var><sub>i</sub></span>. Un po' più economica e, empiricamente, buona quanto LayerNorm.</p>
+      <p><b>Pre-norm vs post-norm.</b> Il transformer originale normalizzava <i>dopo</i> la somma (<span class="m"><span class="fn">LN</span>(<var>x</var> + <span class="fn">F</span>(<var>x</var>))</span>). Oggi si normalizza <i>prima</i> del sotto-blocco, lasciando il residual stream "pulito": il gradiente ha un percorso identità fino all'ingresso e il training è molto più stabile a grandi profondità.</p>
+      <p><b>Perché il residual aiuta.</b> Se <var>x</var><sub>l+1</sub> = <var>x</var><sub>l</sub> + <var>F</var><sub>l</sub>(<var>x</var><sub>l</sub>), allora ∂<var>x</var><sub>l+1</sub>/∂<var>x</var><sub>l</sub> = <var>I</var> + ∂<var>F</var><sub>l</sub>/∂<var>x</var><sub>l</sub>. Il prodotto sui layer, ∏(<var>I</var> + <var>J</var><sub>l</sub>), contiene sempre il termine identità: il gradiente verso i layer iniziali non può annullarsi del tutto.</p>`));
+    root.append(el('h2', { text: 'Verifica rapida' }));
+    root.append(quiz([
+      { q: 'L\'MLP del transformer agisce…', opts: ['su tutti i token insieme, mescolandoli', 'su ogni posizione indipendentemente, con gli stessi pesi', 'solo sull\'ultimo token'], ans: 1, why: 'L\'MLP è "position-wise": nessuno scambio tra token (quello lo fa l\'attention), stessi pesi per tutte le posizioni.' },
+      { q: 'Perché una rete con soli layer lineari in fila sarebbe inutile?', opts: ['Perché è troppo lenta', 'Perché il prodotto di matrici è una sola matrice: manca la non-linearità', 'Perché non ha bias'], ans: 1, why: 'W2(W1x) = (W2W1)x: senza una funzione non lineare in mezzo la profondità non aggiunge capacità.' },
+      { q: 'LayerNorm normalizza…', opts: ['ogni token usando le statistiche dei suoi d valori', 'ogni canale usando le statistiche di tutti i token del batch', 'i pesi dopo ogni aggiornamento'], ans: 0, why: 'Calcola media e varianza lungo la dimensione d del singolo token: non dipende dal batch né dagli altri token.' },
+      { q: 'Perché il residual aiuta il training di reti profonde?', opts: ['Riduce il numero di parametri', 'Garantisce un percorso con guadagno 1 per il gradiente', 'Elimina la necessità dell\'MLP'], ans: 1, why: 'La derivata di ogni layer contiene la matrice identità: il gradiente può fluire fino ai layer iniziali.' },
+    ]));
+  },
+});
+
+'use strict';
+/* Module 7 - from logits to a token: temperature, top-k, top-p */
+function sampleDist(z, T, k, p) {
+  const n = z.length, p0 = softmax(z, Math.max(T, 1e-6)), order = range(n).sort((a, b) => p0[b] - p0[a]), keep = new Array(n).fill(false);
+  let cum = 0;
+  for (let r = 0; r < n; r++) { if (r >= k || (r > 0 && cum >= p)) break; keep[order[r]] = true; cum += p0[order[r]]; }
+  const z1 = sum(p0.map((v, i) => keep[i] ? v : 0)), p1 = p0.map((v, i) => keep[i] ? v / z1 : 0);
+  return { p0, p1, keep, order };
+}
+LAB.tests.sampleDist = sampleDist;
+
+registerModule({
+  id: 'm7', n: 7, title: 'Sampling', eyebrow: 'dai logit al token', heading: 'Da una distribuzione a una scelta',
+  lede: 'Il modello non "dice" una parola: produce una distribuzione di probabilità su tutto il vocabolario. Come si sceglie da quella distribuzione cambia radicalmente il carattere del testo.',
+  build(root) {
+    root.append(el('div', { html: `
+      <p>Dopo l'ultimo blocco, il vettore finale <var>h</var> della <b>ultima posizione</b> viene confrontato con ogni riga della matrice di embedding (<i>unembedding</i>): il prodotto scalare di <var>h</var> con la riga del token <var>v</var> è il suo <b>logit</b> <var>z</var><sub>v</sub>, un numero reale qualsiasi.
+      La <b>softmax</b> li trasforma in probabilità. Poi si estrae. Ogni scelta qui sotto è una "manopola" usata davvero nelle API dei modelli.</p>` }));
+
+    const PROMPTS = {
+      'La capitale d\'Italia è': [['Roma', 9.2], ['Milano', 6.1], ['la', 5.0], ['una', 4.6], ['Torino', 4.1], ['Napoli', 3.9], ['stata', 3.8], ['il', 3.4], ['Firenze', 3.2], ['Venezia', 3.0], ['Bologna', 2.9], ['Parigi', 2.2]],
+      'Il gatto dorme sul': [['divano', 8.0], ['letto', 7.3], ['tappeto', 6.1], ['pavimento', 5.5], ['cuscino', 4.9], ['tavolo', 4.4], ['balcone', 4.1], ['tetto', 3.8], ['computer', 3.0], ['sole', 2.0], ['mare', 1.1], ['frigorifero', 0.6]],
+      'C\'era una volta': [['un', 7.4], ['una', 7.1], [',', 5.2], ['in', 4.8], ['il', 4.3], ['la', 3.9], ['tanto', 3.4], ['quando', 2.8], ['e', 2.2], ['oggi', 1.5], ['un po\'', 1.2], ['robot', 0.8]],
+    };
+    let pk = 'Il gatto dorme sul', D = null, counts = null, last = -1;
+    const sT = slider({ label: 'temperatura T', min: 0.05, max: 3, step: 0.05, value: 1, fmt: v => v.toFixed(2), onInput: () => upd() });
+    const sK = slider({ label: 'top-k', min: 1, max: 12, value: 12, onInput: () => upd() });
+    const sP = slider({ label: 'top-p', min: 0.05, max: 1, step: 0.05, value: 1, fmt: v => v.toFixed(2), onInput: () => upd() });
+    const cv = canvasEl(300), tcv = canvasEl(210), out = el('div', { class: 'readout' }), picked = el('div', { class: 'readout' });
+    const names = () => PROMPTS[pk].map(x => x[0]), logits = () => PROMPTS[pk].map(x => x[1]);
+
+    const bc = setupCanvas(cv, (ctx, w, h, t) => {
+      if (!D) return;
+      const n = D.p0.length, left = 40, bot = 62, top = 18, bw = (w - left - 10) / n, mx = Math.max(0.05, ...D.p0) * 1.12, Y = v => h - bot - v / mx * (h - bot - top);
+      for (let i = 0; i <= 4; i++) { const v = mx * i / 4, y = Y(v); ctx.strokeStyle = rgba(t.line, 0.7); ctx.beginPath(); ctx.moveTo(left, y); ctx.lineTo(w - 6, y); ctx.stroke(); text(ctx, f2(v, v < 0.1 ? 3 : 2), left - 5, y + 4, { align: 'right', color: t.muted, size: 10 }); }
+      const total = counts ? sum(counts) : 0;
+      names().forEach((nm, i) => {
+        const x = left + i * bw + bw * 0.14, ww = bw * 0.72, kept = D.keep[i];
+        ctx.fillStyle = rgba(t.muted, 0.28); ctx.fillRect(x, Y(D.p0[i]), ww, h - bot - Y(D.p0[i]));
+        if (kept) { ctx.fillStyle = t.accent; ctx.fillRect(x, Y(D.p1[i]), ww, h - bot - Y(D.p1[i])); }
+        else { ctx.strokeStyle = t.rose; ctx.lineWidth = 1.5; ctx.beginPath(); ctx.moveTo(x, h - bot - 2); ctx.lineTo(x + ww, h - bot - 14); ctx.moveTo(x, h - bot - 14); ctx.lineTo(x + ww, h - bot - 2); ctx.stroke(); }
+        if (total > 0) { const f = counts[i] / total; ctx.strokeStyle = t.amber; ctx.lineWidth = 2.5; ctx.beginPath(); ctx.moveTo(x - 1, Y(f)); ctx.lineTo(x + ww + 1, Y(f)); ctx.stroke(); }
+        if (i === last) { ctx.fillStyle = t.amber; ctx.beginPath(); ctx.moveTo(x + ww / 2, Y(Math.max(D.p0[i], D.p1[i])) - 4); ctx.lineTo(x + ww / 2 - 6, Y(Math.max(D.p0[i], D.p1[i])) - 14); ctx.lineTo(x + ww / 2 + 6, Y(Math.max(D.p0[i], D.p1[i])) - 14); ctx.fill(); }
+        ctx.save(); ctx.translate(x + ww / 2, h - bot + 10); ctx.rotate(-0.6); text(ctx, nm, 0, 0, { align: 'right', color: kept ? t.ink : t.muted, size: 11, sans: true, weight: kept ? 700 : 500 }); ctx.restore();
+      });
+      const lg = [['probabilità dopo la temperatura', rgba(t.muted, 0.5)], ['probabilità finale (dopo top-k / top-p)', t.accent], ['frequenza osservata', t.amber]];
+      let lx = left; lg.forEach(([s, c]) => { ctx.fillStyle = c; ctx.fillRect(lx, 4, 10, 10); text(ctx, s, lx + 14, 13, { color: t.muted, size: 10 }); lx += 28 + s.length * 6; });
+    });
+
+    const tc = setupCanvas(tcv, (ctx, w, h, t) => {
+      const z = logits(), Ts = range(60).map(i => 0.05 + i * 0.05), pt = Ts.map(T => Math.max(...softmax(z, T))), H = Ts.map(T => entropy(softmax(z, T)) / Math.log(z.length));
+      const c = chart(ctx, w, h, t, [{ xs: Ts, ys: pt, color: t.accent, lw: 2.5, label: 'p(token più probabile)' }, { xs: Ts, ys: H, color: t.amber, lw: 2.5, label: 'entropia normalizzata' }], { xlabel: 'temperatura T', ymin: 0, ymax: 1, xmin: 0, xmax: 3, nx: 6 });
+      ctx.strokeStyle = t.rose; ctx.setLineDash([4, 4]); ctx.beginPath(); ctx.moveTo(c.X(sT.get()), c.y1); ctx.lineTo(c.X(sT.get()), c.y0); ctx.stroke(); ctx.setLineDash([]);
+    });
+
+    function upd(resetCounts = true) {
+      if (resetCounts) { counts = new Array(12).fill(0); last = -1; picked.textContent = ''; }
+      D = sampleDist(logits(), sT.get(), sK.get(), sP.get());
+      const H = entropy(D.p1) / Math.LN2, kept = D.keep.filter(Boolean).length, order = D.order;
+      out.innerHTML = `token possibili dopo i filtri: <b>${kept}</b> su 12 · entropia <b>${f2(H)} bit</b> (≈ ${f2(Math.pow(2, H), 1)} scelte equiprobabili) · più probabile: <b>${names()[order[0]]}</b> ${f2(D.p1[order[0]] * 100, 1)}%`;
+      bc.redraw(); tc.redraw();
+    }
+    function draw(n) {
+      const cs = []; let acc = 0; D.p1.forEach(p => { acc += p; cs.push(acc); });
+      for (let s = 0; s < n; s++) { const u = Math.random() * acc; let i = cs.findIndex(c => u <= c); if (i < 0) i = cs.length - 1; counts[i]++; last = i; }
+      const seq = names()[last];
+      picked.innerHTML = n === 1 ? `Token estratto: <b>${seq}</b>. Frase: "${pk} <b>${seq}</b>…"` : `${sum(counts)} estrazioni accumulate: la frequenza (tratto arancione) si avvicina alla probabilità finale.`;
+      bc.redraw();
+    }
+    const sel = select(Object.keys(PROMPTS).map(k => [k, k]), pk, v => { pk = v; upd(); }, 'contesto');
+    root.append(lab('Laboratorio · distribuzione del prossimo token (logit scelti a mano, 12 candidati)',
+      controls(sel), controls(sT.el, sK.el, sP.el),
+      controls(button('Estrai 1 token', () => draw(1), 'primary'), button('Estrai 500', () => draw(500)), button('Azzera', () => upd()), button('Greedy: T → 0', () => { sT.set(0.05); sK.set(1); sP.set(1); upd(); })),
+      cv, out, picked,
+      el('p', { class: 'muted', html: 'Un vocabolario vero ha decine di migliaia di candidati; qui ce ne sono 12 per leggibilità. Il filtro top-p tiene i token più probabili finché la loro somma raggiunge <var>p</var>.' })));
+    root.append(lab('Laboratorio · che cosa fa davvero la temperatura', tcv,
+      el('p', { html: 'A <var>T</var> → 0 tutta la probabilità va al token più probabile (e l\'entropia a 0): decisioni deterministiche. A <var>T</var> grande la distribuzione tende all\'uniforme: ogni token è ugualmente plausibile. A <var>T</var> = 1 si campiona dalla distribuzione "così com\'è" prodotta dal modello. La linea rosa è il valore scelto sopra.' })));
+    upd();
+
+    root.append(el('h2', { text: 'Le strategie' }));
+    root.append(el('ul', { class: 'prose', html: `
+      <li><b>Greedy</b>: si prende sempre il più probabile. Deterministico, ma tende a ripetizioni e testi piatti.</li>
+      <li><b>Temperatura</b>: ridimensiona i logit prima della softmax. Bassa per compiti con una risposta giusta (codice, estrazione di dati), più alta per scrittura creativa.</li>
+      <li><b>Top-k</b>: si scartano tutti tranne i <var>k</var> più probabili. Semplice ma cieco: a volte 5 candidati sono pochi, a volte troppi.</li>
+      <li><b>Top-p (nucleus)</b>: si tiene il più piccolo insieme di token la cui probabilità cumulata raggiunge <var>p</var>. Si adatta: pochi token quando il modello è sicuro, molti quando è incerto.</li>
+      <li><b>Altre</b>: min-p (soglia relativa al token più probabile), penalità di ripetizione/frequenza, beam search (si tengono più continuazioni in parallelo, usata più in traduzione che in chat).</li>` }));
+    root.append(el('p', { html: 'Un dettaglio che spiega molto: anche a <var>T</var> = 0 le risposte di un LLM in produzione possono variare leggermente, perché le operazioni in virgola mobile su GPU non sono sempre eseguite nello stesso ordine e due logit quasi uguali possono invertirsi.' }));
+
+    root.append(details('math', 'La matematica: logit, softmax con temperatura, entropia', 'formule', `
+      <p><b>Dal vettore ai logit.</b> Con <var>h</var> ∈ ℝ<sup><var>d</var></sup> uscita della norma finale e <var>E</var> ∈ ℝ<sup><var>V</var>×<var>d</var></sup> (spesso la stessa matrice dell'embedding):</p>
+      <span class="eq"><var>z</var> = <var>E h</var> (+ <var>b</var>), &nbsp;&nbsp; <var>z</var><sub>v</sub> = <var>E</var><sub>v</sub>·<var>h</var></span>
+      <p><b>Softmax con temperatura.</b></p>
+      <span class="eq"><var>p</var><sub>v</sub>(<var>T</var>) = ${frac('exp(<var>z</var><sub>v</sub> / <var>T</var>)', 'Σ<sub>u</sub> exp(<var>z</var><sub>u</sub> / <var>T</var>)')}</span>
+      <p>È la distribuzione di Boltzmann con "energia" −<var>z</var> e temperatura <var>T</var>. Per <var>T</var> → 0 diventa un one-hot sull'argmax; per <var>T</var> → ∞ diventa uniforme. Le <i>differenze</i> di logit sono log-odds: <var>z</var><sub>a</sub> − <var>z</var><sub>b</sub> = <var>T</var>·ln(<var>p</var><sub>a</sub>/<var>p</var><sub>b</sub>).</p>
+      <p><b>Entropia</b> (in bit): <span class="m"><var>H</var> = −Σ<sub>v</sub> <var>p</var><sub>v</sub> log<sub>2</sub> <var>p</var><sub>v</sub></span>. 2<sup><var>H</var></sup> è il numero di scelte equiprobabili equivalenti (la <i>perplessità</i> della distribuzione).</p>
+      <p><b>Top-p.</b> Ordina i token per probabilità decrescente e sia <var>S</var><sub>p</sub> il più piccolo insieme con Σ<sub><var>v</var>∈<var>S</var></sub> <var>p</var><sub>v</sub> ≥ <var>p</var>. Si pone <var>p</var>′<sub>v</sub> = <var>p</var><sub>v</sub> / Σ<sub><var>u</var>∈<var>S</var></sub><var>p</var><sub>u</sub> per <var>v</var> ∈ <var>S</var>, 0 altrove, e si estrae da <var>p</var>′.</p>
+      <p><b>Stabilità numerica.</b> Si calcola softmax(<var>z</var>) come exp(<var>z</var> − max <var>z</var>)/Σ…: stesso risultato, nessun overflow. In training si usa direttamente il <i>log-sum-exp</i>.</p>`));
+    root.append(el('h2', { text: 'Verifica rapida' }));
+    root.append(quiz([
+      { q: 'Abbassando la temperatura da 1 a 0,2, la distribuzione…', opts: ['diventa più piatta', 'diventa più concentrata sui token già più probabili', 'resta uguale ma cambia l\'ordine'], ans: 1, why: 'Dividere i logit per un T piccolo amplifica le differenze: il massimo prende quasi tutta la probabilità.' },
+      { q: 'Qual è il vantaggio del top-p rispetto al top-k?', opts: ['È più veloce', 'Il numero di candidati si adatta all\'incertezza del modello', 'Garantisce risposte corrette'], ans: 1, why: 'Se il modello è molto sicuro, il nucleo contiene pochi token; se è incerto, ne contiene molti. Il top-k ne tiene sempre lo stesso numero.' },
+      { q: 'I logit sono…', opts: ['probabilità comprese tra 0 e 1', 'numeri reali non normalizzati, prima della softmax', 'indici dei token'], ans: 1, why: 'Sono punteggi arbitrari; solo le loro differenze contano per la softmax.' },
+    ]));
+  },
+});
+
+'use strict';
+/* A small but real neural language model (character level, Bengio-style MLP) with hand-written backpropagation and Adam. */
+
+const CORPUS = "il gatto dorme sul divano e il sole entra dalla finestra. la mattina il gatto si sveglia, si stiracchia e va in cucina a cercare il latte. in cucina c'è una ciotola piena d'acqua e un piatto con il pesce fresco. il gatto mangia con calma, poi esce in giardino. nel giardino ci sono i fiori, l'erba e un vecchio albero. il gatto sale sull'albero e guarda il mare lontano. il mare è calmo e blu, le barche tornano al porto con il pesce. i pescatori scaricano le casse e le portano al mercato. al mercato la gente compra il pesce, il pane e la frutta. una bambina compra una mela rossa e la mangia sulla strada. la strada porta alla piazza, dove c'è una fontana antica. nella piazza i vecchi parlano del tempo e i bambini giocano con la palla. la sera il vento diventa freddo e il gatto torna a casa. la bambina accende la luce, prepara la cena e racconta al gatto la sua giornata. il gatto ascolta e fa le fusa. fuori la luna illumina la strada e la città dorme. domani il sole tornerà e il gatto si sveglierà di nuovo sul divano. la vita nella piccola città è lenta e tranquilla. ogni giorno le stesse voci, gli stessi profumi, lo stesso mare. il gatto conosce ogni angolo del giardino e ogni suono della casa. quando piove resta vicino alla finestra e guarda le gocce scendere sul vetro. quando c'è il sole si distende sul muro caldo e chiude gli occhi. la bambina cresce e ogni anno il gatto diventa un po' più vecchio, ma la sera si siede sempre sulle sue ginocchia. in inverno la neve copre i tetti e il porto è silenzioso. le barche restano ferme e i pescatori riparano le reti nelle loro case. in primavera tornano i fiori e le rondini volano sopra la piazza. d'estate la gente va al mare, mangia il gelato e dorme sotto gli ombrelloni. in autunno si raccolgono le mele e si prepara il vino nuovo. così passano le stagioni e la città cambia colore, ma il mare resta sempre lo stesso.";
+
+class CharLM {
+  constructor(V, C, Em, H, seed = 7) {
+    Object.assign(this, { V, C, Em, H }); const r = rng(seed), init = (n, s) => Float64Array.from({ length: n }, () => r.gauss() * s);
+    this.E = init(V * Em, 0.3); this.W1 = init(C * Em * H, 1 / Math.sqrt(C * Em)); this.b1 = new Float64Array(H);
+    this.W2 = init(H * V, 0.5 / Math.sqrt(H)); this.b2 = new Float64Array(V);
+    this.P = [this.E, this.W1, this.b1, this.W2, this.b2];
+    this.G = this.P.map(p => new Float64Array(p.length)); this.M = this.P.map(p => new Float64Array(p.length)); this.S = this.P.map(p => new Float64Array(p.length)); this.t = 0;
+    this.x = new Float64Array(C * Em); this.a = new Float64Array(H); this.z = new Float64Array(V);
+  }
+  get nParams() { return this.P.reduce((s, p) => s + p.length, 0); }
+  forward(ctx) {
+    const { C, Em, H, V, E, W1, b1, W2, b2, x, a, z } = this;
+    for (let c = 0; c < C; c++) for (let k = 0; k < Em; k++) x[c * Em + k] = E[ctx[c] * Em + k];
+    for (let j = 0; j < H; j++) a[j] = b1[j];
+    for (let i = 0; i < C * Em; i++) { const xi = x[i], row = i * H; for (let j = 0; j < H; j++) a[j] += xi * W1[row + j]; }
+    for (let j = 0; j < H; j++) a[j] = Math.tanh(a[j]);
+    for (let v = 0; v < V; v++) z[v] = b2[v];
+    for (let j = 0; j < H; j++) { const aj = a[j], row = j * V; for (let v = 0; v < V; v++) z[v] += aj * W2[row + v]; }
+    let m = -Infinity; for (let v = 0; v < V; v++) if (z[v] > m) m = z[v];
+    const p = new Float64Array(V); let s = 0; for (let v = 0; v < V; v++) { p[v] = Math.exp(z[v] - m); s += p[v]; }
+    for (let v = 0; v < V; v++) p[v] /= s; return p;
+  }
+  /* mean cross-entropy over a batch; fills this.G with gradients */
+  lossAndGrad(ctxs, ys) {
+    const { C, Em, H, V, W1, W2 } = this, [gE, gW1, gb1, gW2, gb2] = this.G, B = ys.length, dz = new Float64Array(H), dx = new Float64Array(C * Em), dl = new Float64Array(V);
+    this.G.forEach(g => g.fill(0)); let loss = 0;
+    for (let n = 0; n < B; n++) {
+      const ctx = ctxs[n], y = ys[n], p = this.forward(ctx); loss -= Math.log(p[y] + 1e-12);
+      for (let v = 0; v < V; v++) dl[v] = (p[v] - (v === y ? 1 : 0)) / B;
+      for (let v = 0; v < V; v++) gb2[v] += dl[v];
+      dz.fill(0);
+      for (let j = 0; j < H; j++) { const aj = this.a[j], row = j * V; let da = 0; for (let v = 0; v < V; v++) { gW2[row + v] += aj * dl[v]; da += W2[row + v] * dl[v]; } dz[j] = da * (1 - aj * aj); }
+      for (let j = 0; j < H; j++) gb1[j] += dz[j];
+      dx.fill(0);
+      for (let i = 0; i < C * Em; i++) { const xi = this.x[i], row = i * H; let s = 0; for (let j = 0; j < H; j++) { gW1[row + j] += xi * dz[j]; s += W1[row + j] * dz[j]; } dx[i] = s; }
+      for (let c = 0; c < C; c++) for (let k = 0; k < Em; k++) gE[ctx[c] * Em + k] += dx[c * Em + k];
+    }
+    return loss / B;
+  }
+  adam(lr, b1 = 0.9, b2 = 0.999) {
+    this.t++; const c1 = 1 - b1 ** this.t, c2 = 1 - b2 ** this.t;
+    this.P.forEach((p, q) => { const g = this.G[q], m = this.M[q], s = this.S[q]; for (let i = 0; i < p.length; i++) { m[i] = b1 * m[i] + (1 - b1) * g[i]; s[i] = b2 * s[i] + (1 - b2) * g[i] * g[i]; p[i] -= lr * (m[i] / c1) / (Math.sqrt(s[i] / c2) + 1e-8); } });
+  }
+  evalLoss(data, lo, hi, maxN = 400) {
+    const C = this.C, n = hi - lo - C; if (n <= 0) return NaN; const stride = Math.max(1, Math.floor(n / maxN)); let s = 0, k = 0;
+    for (let i = lo + C; i < hi; i += stride) { s -= Math.log(this.forward(data.subarray(i - C, i))[data[i]] + 1e-12); k++; }
+    return s / k;
+  }
+  generate(ctx0, n, temp, seed = 123) {
+    const r = rng(seed), out = [], ctx = ctx0.slice();
+    for (let i = 0; i < n; i++) {
+      const p = this.forward(ctx), q = softmax(Array.from(p, v => Math.log(v + 1e-12)), temp); let u = r(), k = 0, acc = q[0];
+      while (u > acc && k < q.length - 1) { k++; acc += q[k]; }
+      out.push(k); ctx.shift(); ctx.push(k);
+    }
+    return out;
+  }
+}
+LAB.tests.CharLM = CharLM; LAB.tests.CORPUS = CORPUS;
+
+function buildLMLab(root) {
+  const chars = [...new Set(CORPUS)].sort(), V = chars.length, stoi = new Map(chars.map((c, i) => [c, i]));
+  const data = Int32Array.from([...CORPUS].map(c => stoi.get(c))), nTrain = Math.floor(data.length * 0.88), spaceId = stoi.get(' ');
+  const showCh = c => c === ' ' ? '␣' : c;
+  /* reference: what a pure bigram table would reach on the training part (in-sample conditional entropy) */
+  const cnt = new Map(), ctot = new Map();
+  for (let i = 1; i < nTrain; i++) { const k = data[i - 1] * 100 + data[i]; cnt.set(k, (cnt.get(k) || 0) + 1); ctot.set(data[i - 1], (ctot.get(data[i - 1]) || 0) + 1); }
+  let hb = 0; cnt.forEach((c, k) => { hb -= c / (nTrain - 1) * Math.log(c / ctot.get(Math.floor(k / 100))); });
+  const cfg = { C: 3, Em: 8, H: 64, lr: 0.01, spf: 10 };
+  let lm, step, ema, hist, rb, lastViz = 0;
+  const encode = s => [...s].map(c => stoi.has(c) ? stoi.get(c) : spaceId);
+  const ctxOf = s => { const e = encode(s); while (e.length < cfg.C) e.unshift(spaceId); return e.slice(-cfg.C); };
+
+  const promptIn = el('input', { type: 'text', id: 'lm-prompt', value: 'il gatto ' }); promptIn.style.width = '100%';
+  const sT = slider({ label: 'temperatura', min: 0.3, max: 1.5, step: 0.1, value: 0.8, fmt: v => v.toFixed(1), onInput: () => samples() });
+  const sC = slider({ label: 'contesto (caratteri)', min: 1, max: 6, value: cfg.C, onInput: v => { cfg.C = v; reset(); } });
+  const sE = slider({ label: 'dim. embedding', min: 2, max: 16, value: cfg.Em, onInput: v => { cfg.Em = v; reset(); } });
+  const sH = slider({ label: 'neuroni nascosti', min: 8, max: 128, step: 8, value: cfg.H, onInput: v => { cfg.H = v; reset(); } });
+  const sLR = slider({ label: 'learning rate', min: 0.002, max: 0.05, step: 0.002, value: cfg.lr, fmt: v => v.toFixed(3), onInput: v => { cfg.lr = v; } });
+  const sSp = slider({ label: 'passi per frame', min: 1, max: 60, value: cfg.spf, onInput: v => { cfg.spf = v; } });
+  const lossCv = canvasEl(260), embCv = canvasEl(280);
+  const stat = el('div', { class: 'readout' }), gen = el('div', { class: 'readout' }), topk = el('div', { class: 'readout' });
+  gen.style.cssText = 'white-space:pre-wrap;min-height:7em;background:var(--bg);border:1px solid var(--line);border-radius:6px;padding:10px';
+
+  const text_ = (ctx, s, x, y, t) => text(ctx, s, x, y, { align: 'center', color: t.muted, size: 13 });
+  const lc = setupCanvas(lossCv, (ctx, w, h, t) => {
+    if (!hist || hist.x.length < 2) { text_(ctx, 'premi "Allena" per iniziare', w / 2, h / 2, t); return; }
+    const hi = Math.log(V) * 1.05, S = [
+      { xs: [0, Math.max(step, 1)], ys: [Math.log(V), Math.log(V)], color: t.muted, dash: [3, 5], lw: 1, label: 'caso (ln V)' },
+      { xs: [0, Math.max(step, 1)], ys: [hb, hb], color: t.teal, dash: [6, 4], lw: 1.5, label: 'tabella bigram (in-sample)' },
+      { xs: hist.x, ys: hist.tr, color: t.accent, lw: 2.5, label: 'train' }, { xs: hist.x, ys: hist.va, color: t.amber, lw: 2.5, label: 'validazione' }];
+    chart(ctx, w, h, t, S, { xlabel: 'passi di training', ylabel: 'cross-entropy (nat)', ymin: 0, ymax: hi, xmin: 0, xmax: Math.max(step, 50) });
+  });
+  const ec = setupCanvas(embCv, (ctx, w, h, t) => {
+    if (!lm) return; const rows = range(V).map(i => Array.from(lm.E.subarray(i * lm.Em, (i + 1) * lm.Em))), P = pca(rows, 2).proj, m = Math.max(...P.flat().map(Math.abs)) || 1, cx = w / 2, cy = h / 2, s = Math.min(w, h) * 0.42 / m;
+    ctx.strokeStyle = t.line; ctx.beginPath(); ctx.moveTo(8, cy); ctx.lineTo(w - 8, cy); ctx.moveTo(cx, 8); ctx.lineTo(cx, h - 8); ctx.stroke();
+    chars.forEach((c, i) => {
+      const cls = c === ' ' ? t.teal : /[aeiouàèéìòù]/.test(c) ? t.accent : /[a-z]/.test(c) ? t.amber : t.rose;
+      text(ctx, showCh(c), cx + P[i][0] * s, cy - P[i][1] * s + 5, { align: 'center', color: cls, size: 15, weight: 700 });
+    });
+    text(ctx, 'embedding dei caratteri (PCA 2D) · blu vocali · arancio consonanti · verde spazio · rosa punteggiatura', 8, h - 6, { color: t.muted, size: 10 });
+  });
+
+  function reset() {
+    lm = new CharLM(V, cfg.C, cfg.Em, cfg.H, 7); step = 0; lastViz = 0; ema = null; rb = rng(99); hist = { x: [], tr: [], va: [] };
+    record(); samples(); status(); lc.redraw(); ec.redraw();
+  }
+  function record() {
+    const tr = lm.evalLoss(data, 0, nTrain), va = lm.evalLoss(data, nTrain, data.length); hist.x.push(step); hist.tr.push(tr); hist.va.push(va); return [tr, va];
+  }
+  function samples() {
+    if (!lm) return;
+    const out = lm.generate(ctxOf(promptIn.value), 220, sT.get()); gen.textContent = promptIn.value + out.map(i => chars[i]).join('');
+    const p = lm.forward(ctxOf(promptIn.value)), top = range(V).sort((a, b) => p[b] - p[a]).slice(0, 5);
+    topk.innerHTML = `Dopo "<b>${promptIn.value.slice(-cfg.C).replace(/ /g, '␣')}</b>" il modello prevede: ` + top.map(i => `<b>${showCh(chars[i])}</b> ${f2(p[i] * 100, 0)}%`).join(' · ');
+  }
+  function status() {
+    const tr = hist.tr[hist.tr.length - 1], va = hist.va[hist.va.length - 1];
+    stat.innerHTML = `passo <b>${step}</b> · parametri <b>${lm.nParams.toLocaleString('it-IT')}</b> · vocabolario ${V} caratteri · loss train <b>${f2(tr, 3)}</b> · validazione <b>${f2(va, 3)}</b> (perplessità ${f2(Math.exp(va), 1)}) · caso = ln ${V} = ${f2(Math.log(V), 3)}`;
+  }
+  function trainSteps(n) {
+    for (let k = 0; k < n; k++) {
+      const ctxs = [], ys = [];
+      for (let b = 0; b < 32; b++) { const i = cfg.C + Math.floor(rb() * (nTrain - cfg.C)); ctxs.push(data.subarray(i - cfg.C, i)); ys.push(data[i]); }
+      const l = lm.lossAndGrad(ctxs, ys); lm.adam(cfg.lr); step++; ema = ema == null ? l : 0.95 * ema + 0.05 * l;
+    }
+    record(); status(); lc.redraw();
+    if (step - lastViz >= 20 || n > 20) { lastViz = step; samples(); ec.redraw(); }
+  }
+  const lp = loop(lossCv, () => { trainSteps(cfg.spf); if (step >= 20000) { lp.stop(); playBtn.textContent = 'Allena'; } });
+  const playBtn = button('Allena', () => { if (lp.running) { lp.stop(); playBtn.textContent = 'Allena'; } else { lp.start(); playBtn.textContent = 'Pausa'; } }, 'primary');
+  promptIn.addEventListener('input', samples);
+
+  root.append(lab('Laboratorio · un language model che si allena davvero, qui nel browser',
+    el('p', { html: `Il testo è un breve racconto in italiano (${CORPUS.length} caratteri, 88% per il training e 12% per la validazione). Il modello vede gli ultimi <var>C</var> caratteri, li trasforma in embedding, li passa a un MLP e produce una distribuzione sul carattere successivo: la stessa struttura "contesto → logit → softmax → cross-entropy" di un LLM, con un'MLP al posto dei transformer block. Tutto (forward, backpropagation, Adam) è codice scritto a mano in questa pagina.` }),
+    controls(sC.el, sE.el, sH.el), controls(sLR.el, sSp.el), controls(playBtn, button('+100 passi', () => trainSteps(100)), button('Reset', () => { lp.stop(); playBtn.textContent = 'Allena'; reset(); })),
+    stat, lossCv,
+    el('p', { html: '<b>Come leggerlo.</b> All\'inizio la loss è ≈ ln V: il modello non sa nulla. In poche centinaia di passi la curva blu (training) scende sotto la linea verde, la <i>tabella bigram</i> calcolata sullo stesso training set, perché il modello vede più di un carattere di contesto. Ma il testo è minuscolo: la validazione (arancione) tocca il minimo molto presto e poi <b>risale</b> mentre il training continua a calare. Il modello sta <b>memorizzando</b> il testo (overfitting). Prova ad aumentare il contesto: memorizza ancora più in fretta; con contesto = 1 non può memorizzare e le due curve restano vicine, ma alte. Gli LLM veri evitano questo con corpora di migliaia di miliardi di token.' }),
+    el('div', { class: 'grid2' },
+      el('div', {}, el('div', { class: 'lab-title', style: 'margin-bottom:8px', text: 'Testo generato (aggiornato durante il training)' }), promptIn, controls(sT.el), gen, topk),
+      el('div', {}, el('div', { class: 'lab-title', style: 'margin-bottom:8px', text: 'Spazio degli embedding appreso' }), embCv))));
+  reset();
+  return { lm: () => lm };
+}
+
+'use strict';
+/* Module 8 - training: cross-entropy, backpropagation, optimizers on a loss landscape, a real tiny LM */
+function softmaxCE(z, y) { const p = softmax(z); return { p, loss: -Math.log(p[y] + 1e-300), grad: p.map((v, i) => v - (i === y ? 1 : 0)) }; }
+function backprop(P) {
+  const u = P.w1 * P.x + P.b1, h = Math.max(0, u), y = P.w2 * h + P.b2, L = (y - P.t) ** 2;
+  const dy = 2 * (y - P.t), dw2 = dy * h, db2 = dy, dh = dy * P.w2, du = u > 0 ? dh : 0, dw1 = du * P.x, db1 = du, dx = du * P.w1;
+  return { u, h, y, L, dy, dh, du, g: { w1: dw1, b1: db1, w2: dw2, b2: db2, x: dx } };
+}
+const SURF = {
+  valle: { name: 'Valle stretta (Rosenbrock)', a: [-1.6, 1.6], b: [-0.6, 2.6], start: [-1.3, 2.1], lr: [0.01, 0.005, 0.05], mins: [[1, 1]], f: (a, b) => (1 - a) ** 2 + 8 * (b - a * a) ** 2, g: (a, b) => [-2 * (1 - a) - 32 * a * (b - a * a), 16 * (b - a * a)] },
+  conca: { name: 'Conca molto allungata', a: [-3, 3], b: [-1, 1], start: [-2.6, 0.8], lr: [0.004, 0.002, 0.05], mins: [[0, 0]], f: (a, b) => 0.5 * (a * a + 400 * b * b), g: (a, b) => [a, 400 * b] },
+  himmel: { name: 'Quattro minimi (Himmelblau)', a: [-5, 5], b: [-5, 5], start: [0, 0.2], lr: [0.05, 0.02, 0.1], mins: [[3, 2], [-2.805, 3.131], [-3.779, -3.283], [3.584, -1.848]], f: (a, b) => ((a * a + b - 11) ** 2 + (a + b * b - 7) ** 2) / 30, g: (a, b) => { const u = a * a + b - 11, v = a + b * b - 7; return [(4 * a * u + 2 * v) / 30, (2 * u + 4 * b * v) / 30]; } },
+};
+class Opt {
+  constructor(kind) { this.kind = kind; }
+  reset(s) { this.p = s.slice(); this.v = [0, 0]; this.m = [0, 0]; this.s = [0, 0]; this.t = 0; this.path = [s.slice()]; this.div = false; }
+  step(gfn, lr) {
+    if (this.div) return; const g = gfn(this.p[0], this.p[1]); this.t++;
+    for (let i = 0; i < 2; i++) {
+      if (this.kind === 'sgd') this.p[i] -= lr * g[i];
+      else if (this.kind === 'momentum') { this.v[i] = 0.9 * this.v[i] + g[i]; this.p[i] -= lr * this.v[i]; }
+      else { this.m[i] = 0.9 * this.m[i] + 0.1 * g[i]; this.s[i] = 0.999 * this.s[i] + 0.001 * g[i] * g[i]; this.p[i] -= lr * (this.m[i] / (1 - 0.9 ** this.t)) / (Math.sqrt(this.s[i] / (1 - 0.999 ** this.t)) + 1e-8); }
+    }
+    if (!Number.isFinite(this.p[0] + this.p[1]) || Math.abs(this.p[0]) > 50 || Math.abs(this.p[1]) > 50) { this.div = true; return; }
+    this.path.push(this.p.slice()); if (this.path.length > 3000) this.path.shift();
+  }
+}
+Object.assign(LAB.tests, { softmaxCE, backprop, SURF, Opt });
+
+registerModule({
+  id: 'm8', n: 8, title: 'Training', eyebrow: 'come si trovano i parametri', heading: 'Addestrare: scendere lungo la loss',
+  lede: 'Tutto ciò che hai visto finora ha parametri casuali. L\'addestramento li aggiusta, miliardi di volte, per rendere più probabile il token che nel testo vero viene davvero dopo.',
+  build(root) {
+    root.append(el('div', { html: `
+      <p>L'obiettivo è sorprendentemente semplice: per ogni posizione di ogni testo, il modello produce una distribuzione sul token successivo e si misura <b>quanta probabilità ha assegnato al token vero</b>. La <b>loss</b> è il logaritmo negativo di quella probabilità, mediato su tutte le posizioni (<i>cross-entropy</i>).
+      Poi si calcola, per ogni parametro, <b>in che direzione</b> farlo muovere per ridurre la loss (<i>gradiente</i>, ottenuto con la <i>backpropagation</i>) e si fa un piccolo passo (<i>ottimizzatore</i>). Si ripete su miliardi di esempi.</p>
+      <p>Un trucco rende tutto efficiente: grazie alla maschera causale, una singola passata su una sequenza di <var>T</var> token fornisce <var>T</var> previsioni (una per posizione) e quindi <var>T</var> termini di loss, tutti calcolati in parallelo. Si chiama <i>teacher forcing</i>.</p>` }));
+
+    /* ---------- 8a cross-entropy ---------- */
+    root.append(el('h2', { text: '1. La loss e il suo gradiente' }));
+    root.append(el('p', { html: 'Se il modello assegna probabilità <var>p</var> al token giusto, la loss è −ln <var>p</var>: 0 se <var>p</var> = 1, ≈ 0,69 se <var>p</var> = ½, cresce senza limite se <var>p</var> → 0. Il gradiente rispetto ai logit ha una forma elegantissima: <b>(probabilità − one-hot del token giusto)</b>. Qui sotto i logit sono parametri liberi, così puoi vedere un vero passo di discesa.' }));
+    const names = ['Roma', 'Milano', 'la', 'una', 'Torino', 'Napoli'], z0 = [1.0, 3.0, 2.0, 0.5, 2.5, 0.0];
+    let z = z0.slice(), yT = 0, hist = [], ce = softmaxCE(z, yT);
+    const cvCE = canvasEl(260), cvLoss = canvasEl(150), ceOut = el('div', { class: 'readout' });
+    const sEta = slider({ label: 'learning rate η', min: 0.1, max: 2, step: 0.1, value: 0.5, fmt: v => v.toFixed(1) });
+    const bars = setupCanvas(cvCE, (ctx, w, h, t) => {
+      const n = z.length, left = 40, bw = (w - left - 10) / n, y1 = h * 0.5 - 14, yb = h * 0.76, hb = h * 0.14;
+      text(ctx, 'probabilità p', 6, 14, { color: t.muted, size: 11 }); text(ctx, 'gradiente ∂L/∂z = p − y', 6, h * 0.5 + 12, { color: t.muted, size: 11 });
+      ctx.strokeStyle = t.line; ctx.beginPath(); ctx.moveTo(left, y1); ctx.lineTo(w - 6, y1); ctx.moveTo(left, yb); ctx.lineTo(w - 6, yb); ctx.stroke();
+      names.forEach((nm, i) => {
+        const x = left + i * bw + bw * 0.16, ww = bw * 0.68, ph = ce.p[i] * (y1 - 24), g = ce.grad[i];
+        ctx.fillStyle = i === yT ? t.amber : t.accent; ctx.fillRect(x, y1 - ph, ww, ph);
+        text(ctx, f2(ce.p[i], 2), x + ww / 2, y1 - ph - 4, { align: 'center', color: t.ink, size: 11 });
+        ctx.fillStyle = g > 0 ? t.rose : t.teal; ctx.fillRect(x, yb, ww, -g * hb);
+        text(ctx, (g > 0 ? '+' : '') + f2(g, 2), x + ww / 2, g > 0 ? yb - g * hb - 4 : yb - g * hb + 12, { align: 'center', color: g > 0 ? t.rose : t.teal, size: 11 });
+        text(ctx, nm + (i === yT ? ' ✓' : ''), x + ww / 2, h - 8, { align: 'center', color: i === yT ? t.amber : t.muted, size: 12, sans: true, weight: i === yT ? 800 : 500 });
+      });
+    });
+    const lossC = setupCanvas(cvLoss, (ctx, w, h, t) => { chart(ctx, w, h, t, [{ xs: hist.map((_, i) => i), ys: hist, color: t.accent, lw: 2.5, dots: hist.length < 30 }], { xlabel: 'passi', ylabel: 'loss', ymin: 0, ny: 3, xmin: 0, xmax: Math.max(hist.length - 1, 5), nx: 5 }); });
+    function ceUpd() {
+      ce = softmaxCE(z, yT); if (!hist.length) hist.push(ce.loss);
+      ceOut.innerHTML = `token giusto: <b>${names[yT]}</b> · p = <b>${f2(ce.p[yT], 3)}</b> · loss = −ln p = <b>${f2(ce.loss, 3)}</b> · perplessità e<sup>loss</sup> = ${f2(Math.exp(ce.loss), 2)}<br>` +
+        `<span class="muted">rosa = "abbassa questo logit", verde = "alzalo". Il token giusto ha sempre gradiente negativo (−(1−p)); gli altri sono spinti giù in proporzione alla loro probabilità.</span>`;
+      bars.redraw(); lossC.redraw();
+    }
+    const ceStep = n => { for (let k = 0; k < n; k++) { z = z.map((v, i) => v - sEta.get() * ce.grad[i]); ce = softmaxCE(z, yT); hist.push(ce.loss); } ceUpd(); };
+    cvCE.addEventListener('click', ev => { const rc = cvCE.getBoundingClientRect(), i = Math.floor((ev.clientX - rc.left - 40) / ((rc.width - 50) / names.length)); if (i >= 0 && i < names.length) { yT = i; hist = []; ceUpd(); } });
+    root.append(lab('Laboratorio · softmax + cross-entropy (clicca una barra per cambiare il token giusto)', controls(sEta.el, button('1 passo', () => ceStep(1), 'primary'), button('10 passi', () => ceStep(10)), button('Reset', () => { z = z0.slice(); hist = []; ceUpd(); })), cvCE, ceOut, cvLoss)); ceUpd();
+
+    /* ---------- 8b backprop ---------- */
+    root.append(el('h2', { text: '2. La backpropagation, a mano' }));
+    root.append(el('p', { html: 'Una rete è una catena di operazioni semplici. La <b>regola della catena</b> dice che per sapere come la loss cambia rispetto a un nodo basta moltiplicare, andando all\'indietro, le derivate locali. Qui una "rete" con un solo neurone: <var>u</var> = <var>w</var><sub>1</sub><var>x</var> + <var>b</var><sub>1</sub>, <var>h</var> = ReLU(<var>u</var>), <var>y</var> = <var>w</var><sub>2</sub><var>h</var> + <var>b</var><sub>2</sub>, <var>L</var> = (<var>y</var> − <var>t</var>)². Ogni scheda mostra il valore in avanti (blu) e il gradiente ∂<var>L</var>/∂nodo all\'indietro (rosa).' }));
+    const BP = { x: 1.5, t: 1.0, w1: 0.8, b1: -0.3, w2: 1.2, b2: 0.1 };
+    const bpSl = Object.fromEntries(['x', 't', 'w1', 'b1', 'w2', 'b2'].map(k => [k, slider({ label: k === 'w1' ? 'w₁' : k === 'w2' ? 'w₂' : k === 'b1' ? 'b₁' : k === 'b2' ? 'b₂' : k, min: -2, max: 2, step: 0.05, value: BP[k], fmt: v => v.toFixed(2), onInput: v => { BP[k] = v; bpUpd(); } })]));
+    const gBox = el('div', { class: 'graph' }), bpOut = el('div', { class: 'readout' }), sEta2 = slider({ label: 'η', min: 0.01, max: 0.3, step: 0.01, value: 0.1, fmt: v => v.toFixed(2) });
+    let bpHist = [];
+    function bpUpd(rec) {
+      const r = backprop(BP); if (rec || !bpHist.length) bpHist.push(r.L);
+      const eps = 1e-6; let err = 0;
+      ['w1', 'b1', 'w2', 'b2'].forEach(k => { const a = { ...BP, [k]: BP[k] + eps }, b = { ...BP, [k]: BP[k] - eps }; err = Math.max(err, Math.abs((backprop(a).L - backprop(b).L) / (2 * eps) - r.g[k])); });
+      const card = (name, f, g) => el('div', { class: 'gn' }, el('b', { text: name }), el('div', { class: 'f', text: 'valore ' + f2(f, 3) }), g == null ? null : el('div', { class: 'g', text: '∂L/∂ = ' + f2(g, 3) }));
+      gBox.replaceChildren(card('x', BP.x, r.g.x), card('u = w₁x + b₁', r.u, r.du), card('h = ReLU(u)', r.h, r.dh), card('y = w₂h + b₂', r.y, r.dy), card('L = (y − t)²', r.L, 1));
+      bpOut.innerHTML = `gradienti sui parametri: ∂L/∂w₂ = <b>${f2(r.g.w2, 3)}</b> · ∂L/∂b₂ = <b>${f2(r.g.b2, 3)}</b> · ∂L/∂w₁ = <b>${f2(r.g.w1, 3)}</b> · ∂L/∂b₁ = <b>${f2(r.g.b1, 3)}</b><br>` +
+        `verifica numerica (differenze finite): errore massimo <b>${err.toExponential(1)}</b>` + (r.u <= 0 ? '<br><span style="color:var(--rose)">u ≤ 0: il neurone ReLU è spento, il gradiente verso w₁ e b₁ è esattamente 0 (neurone "morto" per questo input).</span>' : '') +
+        `<br>loss nei passi recenti: ${bpHist.slice(-8).map(v => f2(v, 3)).join(' → ')}`;
+    }
+    const bpStep = () => { const r = backprop(BP); ['w1', 'b1', 'w2', 'b2'].forEach(k => { BP[k] -= sEta2.get() * r.g[k]; bpSl[k].set(BP[k]); }); bpUpd(true); };
+    root.append(lab('Laboratorio · il grafo di calcolo', controls(...['x', 't'].map(k => bpSl[k].el)), controls(...['w1', 'b1', 'w2', 'b2'].map(k => bpSl[k].el)), gBox, bpOut, controls(sEta2.el, button('Passo di discesa', bpStep, 'primary'), button('10 passi', () => { for (let i = 0; i < 10; i++) bpStep(); }), button('Azzera storia', () => { bpHist = []; bpUpd(); }))));
+    bpUpd();
+    root.append(el('p', { html: 'In un LLM succede la stessa cosa con miliardi di nodi: si fa una passata <i>in avanti</i> salvando i valori intermedi, poi una passata <i>all\'indietro</i> che riutilizza la regola della catena. Il costo è circa il doppio della passata in avanti, ed è il motivo per cui il training costa ~6<var>N</var> FLOP per token contro ~2<var>N</var> dell\'inferenza.' }));
+
+    /* ---------- 8c landscape ---------- */
+    root.append(el('h2', { text: '3. Il paesaggio della loss e gli ottimizzatori' }));
+    root.append(el('p', { html: 'Con due soli parametri (<var>a</var>, <var>b</var>) la loss è una superficie che possiamo vedere. Un LLM ha miliardi di parametri: stessa idea, ma in miliardi di dimensioni. Tre ottimizzatori partono dallo stesso punto: <b style="color:var(--amber)">SGD</b> segue il gradiente, <b style="color:var(--rose)">Momentum</b> accumula velocità, <b style="color:var(--teal)">Adam</b> riscala il passo di ogni parametro in base alla storia dei suoi gradienti. Trascina per ruotare, clicca sulla mappa piatta per scegliere un nuovo punto di partenza.' }));
+    let surfKey = 'valle', S = SURF[surfKey], gmax = 1;
+    const opts = [new Opt('sgd'), new Opt('momentum'), new Opt('adam')], ocol = ['amber', 'rose', 'teal'], onames = ['SGD', 'Momentum', 'Adam'];
+    const view = f => Math.log1p(f) / Math.log1p(gmax);
+    const setSurf = k => { surfKey = k; S = SURF[k]; if (typeof lrS !== 'undefined') lrS.forEach((sl, i) => sl.set(S.lr[i])); gmax = 0; for (let i = 0; i <= 40; i++) for (let j = 0; j <= 40; j++) gmax = Math.max(gmax, S.f(S.a[0] + (S.a[1] - S.a[0]) * i / 40, S.b[0] + (S.b[1] - S.b[0]) * j / 40)); resetOpt(S.start); };
+    const resetOpt = st => { opts.forEach(o => o.reset(st)); land3.redraw && refreshLand(); };
+    const cv3 = canvasEl(380), cvMap = canvasEl(300), legend3 = el('div', { class: 'readout' });
+    const cam = new Cam3D(cv3, () => land3.redraw(), { yaw: 0.9, pitch: 0.75 });
+    const toXZ = (a, b) => [(a - S.a[0]) / (S.a[1] - S.a[0]) * 2 - 1, (b - S.b[0]) / (S.b[1] - S.b[0]) * 2 - 1];
+    const land3 = setupCanvas(cv3, (ctx, w, h, t) => {
+      if (!opts[0].path) return;
+      const N = 30, sc = Math.min(w, h) * 0.4, quads = [], Y = (a, b) => (view(S.f(a, b)) - 0.5) * 1.1;
+      for (let i = 0; i < N; i++) for (let j = 0; j < N; j++) {
+        const pts = [[i, j], [i + 1, j], [i + 1, j + 1], [i, j + 1]].map(([p, q]) => { const a = S.a[0] + (S.a[1] - S.a[0]) * p / N, b = S.b[0] + (S.b[1] - S.b[0]) * q / N, [X, Z] = toXZ(a, b); return cam.project(X, Y(a, b), Z, w, h, sc); });
+        const a = S.a[0] + (S.a[1] - S.a[0]) * (i + 0.5) / N, b = S.b[0] + (S.b[1] - S.b[0]) * (j + 0.5) / N;
+        quads.push({ pts, d: (pts[0][2] + pts[2][2]) / 2, v: view(S.f(a, b)) });
+      }
+      quads.sort((p, q) => p.d - q.d);
+      quads.forEach(({ pts, v }) => { ctx.fillStyle = rgba(t.accent, 0.06 + 0.5 * v); ctx.strokeStyle = rgba(t.ink, 0.14); ctx.lineWidth = 0.6; ctx.beginPath(); ctx.moveTo(pts[0][0], pts[0][1]); for (let k = 1; k < 4; k++) ctx.lineTo(pts[k][0], pts[k][1]); ctx.closePath(); ctx.fill(); ctx.stroke(); });
+      const P3 = ([a, b]) => { const [X, Z] = toXZ(a, b); return cam.project(X, Y(a, b) + 0.02, Z, w, h, sc); };
+      S.mins.forEach(m => { const q = P3(m); ctx.strokeStyle = t.ink; ctx.lineWidth = 2; ctx.beginPath(); ctx.moveTo(q[0] - 6, q[1]); ctx.lineTo(q[0] + 6, q[1]); ctx.moveTo(q[0], q[1] - 6); ctx.lineTo(q[0], q[1] + 6); ctx.stroke(); });
+      opts.forEach((o, k) => {
+        const c = t[ocol[k]]; ctx.strokeStyle = c; ctx.lineWidth = 2.5; ctx.beginPath();
+        o.path.forEach((p, i) => { const q = P3(p); i ? ctx.lineTo(q[0], q[1]) : ctx.moveTo(q[0], q[1]); }); ctx.stroke();
+        const q = P3(o.p); ctx.fillStyle = c; ctx.beginPath(); ctx.arc(q[0], q[1], 5.5, 0, 7); ctx.fill(); ctx.strokeStyle = t.bg; ctx.lineWidth = 1.5; ctx.stroke();
+      });
+      text(ctx, 'altezza = ln(1 + loss) · croce = minimo · trascina per ruotare', 8, h - 8, { color: t.muted, size: 10 });
+    });
+    const mapC = setupCanvas(cvMap, (ctx, w, h, t) => {
+      if (!opts[0].path) return;
+      const N = 56, cw = w / N, ch = h / N;
+      for (let i = 0; i < N; i++) for (let j = 0; j < N; j++) {
+        const a = S.a[0] + (S.a[1] - S.a[0]) * (i + 0.5) / N, b = S.b[1] - (S.b[1] - S.b[0]) * (j + 0.5) / N, v = view(S.f(a, b)), band = Math.floor(v * 14);
+        ctx.fillStyle = rgba(t.accent, 0.05 + 0.45 * v + (band % 2 ? 0.07 : 0)); ctx.fillRect(i * cw, j * ch, cw + 0.5, ch + 0.5);
+      }
+      const P = ([a, b]) => [(a - S.a[0]) / (S.a[1] - S.a[0]) * w, h - (b - S.b[0]) / (S.b[1] - S.b[0]) * h];
+      S.mins.forEach(m => { const q = P(m); ctx.strokeStyle = t.ink; ctx.lineWidth = 2; ctx.beginPath(); ctx.moveTo(q[0] - 6, q[1]); ctx.lineTo(q[0] + 6, q[1]); ctx.moveTo(q[0], q[1] - 6); ctx.lineTo(q[0], q[1] + 6); ctx.stroke(); });
+      opts.forEach((o, k) => { const c = t[ocol[k]]; ctx.strokeStyle = c; ctx.lineWidth = 2.5; ctx.beginPath(); o.path.forEach((p, i) => { const q = P(p); i ? ctx.lineTo(q[0], q[1]) : ctx.moveTo(q[0], q[1]); }); ctx.stroke(); const q = P(o.p); ctx.fillStyle = c; ctx.beginPath(); ctx.arc(q[0], q[1], 5, 0, 7); ctx.fill(); });
+      const s0 = P(S.start); ctx.strokeStyle = t.ink; ctx.setLineDash([3, 3]); ctx.beginPath(); ctx.arc(s0[0], s0[1], 8, 0, 7); ctx.stroke(); ctx.setLineDash([]);
+      text(ctx, 'mappa dall\'alto · clicca per scegliere la partenza', 8, h - 8, { color: t.ink, size: 10 });
+    });
+    cvMap.addEventListener('click', ev => {
+      const rc = cvMap.getBoundingClientRect(), a = S.a[0] + (S.a[1] - S.a[0]) * (ev.clientX - rc.left) / rc.width, b = S.b[0] + (S.b[1] - S.b[0]) * (1 - (ev.clientY - rc.top) / rc.height);
+      S.start = [a, b]; resetOpt(S.start);
+    });
+    const lrS = [
+      slider({ label: 'lr SGD', min: 0.001, max: 0.06, step: 0.001, value: 0.01, fmt: v => v.toFixed(3) }),
+      slider({ label: 'lr Momentum', min: 0.001, max: 0.03, step: 0.001, value: 0.005, fmt: v => v.toFixed(3) }),
+      slider({ label: 'lr Adam', min: 0.005, max: 0.2, step: 0.005, value: 0.05, fmt: v => v.toFixed(3) })];
+    const sSp3 = slider({ label: 'velocità', min: 1, max: 12, value: 3 });
+    const stepAll = () => opts.forEach((o, k) => o.step(S.g, lrS[k].get()));
+    function refreshLand() {
+      legend3.innerHTML = opts.map((o, k) => { const f = S.f(o.p[0], o.p[1]); return `<span style="color:var(--${ocol[k]})"><b>${onames[k]}</b></span> passi ${o.t} · loss <b>${o.div ? '—' : f2(f, 4)}</b>${o.div ? ' <span style="color:var(--rose)">(divergente!)</span>' : f < 1e-3 ? ' ✓ al minimo' : ''}`; }).join('<br>');
+      land3.redraw(); mapC.redraw();
+    }
+    const lp3 = loop(cv3, () => { for (let k = 0; k < sSp3.get(); k++) stepAll(); refreshLand(); });
+    const play3 = button('Avvia', () => { if (lp3.running) { lp3.stop(); play3.textContent = 'Avvia'; } else { lp3.start(); play3.textContent = 'Pausa'; } }, 'primary');
+    root.append(lab('Laboratorio · tre ottimizzatori sulla stessa superficie',
+      controls(select(Object.keys(SURF).map(k => [k, SURF[k].name]), surfKey, v => { setSurf(v); }, 'superficie'), sSp3.el),
+      controls(...lrS.map(x => x.el)),
+      controls(play3, button('1 passo', () => { stepAll(); refreshLand(); }), button('Ricomincia', () => resetOpt(S.start))),
+      el('div', { class: 'grid2' }, cv3, cvMap), legend3,
+      el('p', { html: '<b>Da provare.</b> Ogni ottimizzatore ha il proprio learning rate (i valori iniziali sono scelti per ciascuno: non sono confrontabili tra loro, perché in SGD il passo dipende dalla scala del gradiente, in Adam è circa il learning rate stesso). Sulla <i>valle stretta</i> SGD avanza lentamente lungo il fondo, Momentum accumula velocità e lo supera, Adam arriva per primo. Sulla <i>conca molto allungata</i> (curvatura 1 in una direzione, 400 nell\'altra) SGD è limitato dalla direzione più ripida: se porti il suo learning rate sopra 2/400 = 0,005 <b>diverge</b>; Adam normalizza ogni coordinata e procede veloce in entrambe. Su <i>Himmelblau</i> ci sono quattro minimi: cambiando il punto di partenza (clic sulla mappa) cambia la valle in cui si finisce. Su problemi così piccoli tutti arrivano comunque: la differenza si vede su problemi mal condizionati e rumorosi come quelli reali.' })));
+    setSurf('valle');
+
+    /* ---------- 8d: real LM ---------- */
+    root.append(el('h2', { text: '4. Un vero language model, addestrato qui' }));
+    root.append(el('p', { html: 'Mettiamo insieme i pezzi: dati, previsione del token successivo, cross-entropy, backpropagation, Adam. Non è un transformer (nel prossimo aggiornamento del laboratorio lo sarà), ma il ciclo di training è identico a quello degli LLM.' }));
+    buildLMLab(root);
+
+    /* ---------- 8e: schedule ---------- */
+    root.append(el('h2', { text: '5. Il training su larga scala' }));
+    root.append(el('p', { html: 'Con miliardi di parametri e migliaia di miliardi di token, il ciclo è lo stesso ma attorniato da molti accorgimenti. Uno dei più importanti riguarda il <b>learning rate</b>: si parte da zero (<i>warmup</i>, per non destabilizzare un modello ancora casuale), si sale al massimo, poi si scende lentamente, spesso con un coseno, fino a una frazione del picco.' }));
+    const sW = slider({ label: 'warmup (passi)', min: 0, max: 3000, step: 100, value: 500, onInput: () => sch.redraw() }), sTot = slider({ label: 'passi totali', min: 2000, max: 50000, step: 1000, value: 20000, fmt: human, onInput: () => sch.redraw() }), sPk = slider({ label: 'picco', min: 1, max: 10, step: 0.5, value: 3, fmt: v => v.toFixed(1) + 'e-4', onInput: () => sch.redraw() });
+    const schCv = canvasEl(210);
+    const sch = setupCanvas(schCv, (ctx, w, h, t) => {
+      const W = sW.get(), T = sTot.get(), pk = sPk.get(), xs = range(201).map(i => i * T / 200), lrf = s => s < W ? pk * s / Math.max(W, 1) : pk * (0.1 + 0.9 * 0.5 * (1 + Math.cos(Math.PI * (s - W) / Math.max(T - W, 1))));
+      chart(ctx, w, h, t, [{ xs, ys: xs.map(lrf), color: t.accent, lw: 3, label: 'learning rate (×10⁻⁴)' }], { xlabel: 'passo di training', ymin: 0, ymax: 10.5, xmin: 0, xmax: T, nx: 5 });
+    });
+    root.append(lab('Laboratorio · schedule del learning rate (warmup + decadimento a coseno, minimo al 10% del picco)', controls(sW.el, sTot.el, sPk.el), schCv));
+    root.append(el('ul', { class: 'prose', html: `
+      <li><b>Batch enormi.</b> Ogni passo media il gradiente su centinaia di migliaia o milioni di token, distribuiti su migliaia di GPU (parallelismo sui dati, sui tensori, sulle pipeline).</li>
+      <li><b>AdamW.</b> Adam con <i>weight decay</i> separato dalla stima del gradiente; <b>gradient clipping</b> sulla norma globale (tipicamente 1,0) per evitare picchi.</li>
+      <li><b>Precisione mista.</b> Calcoli in bf16/fp8 con copie master dei pesi in fp32.</li>
+      <li><b>Scaling laws.</b> La loss scende come una legge di potenza in parametri, dati e calcolo. Una regola emersa dagli studi "Chinchilla" suggerisce circa 20 token di training per parametro per usare bene un budget di calcolo; i modelli recenti si addestrano spesso su molti più token per renderli più economici da usare.</li>
+      <li><b>Dati.</b> Il testo viene filtrato, deduplicato e mescolato. La qualità dei dati conta quanto l'architettura.</li>` }));
+    root.append(el('div', { class: 'note', html: '<b>E dopo?</b>Il modello appena pre-addestrato sa continuare testi, non sa ancora fare l\'assistente. Seguono tipicamente <i>supervised fine-tuning</i> su conversazioni di esempio e una fase di ottimizzazione sulle preferenze (RLHF, DPO) o su ricompense verificabili (per i modelli di ragionamento). Sono i prossimi moduli del laboratorio.' }));
+
+    root.append(details('math', 'La matematica: cross-entropy, gradiente, backprop, Adam', 'formule', `
+      <p><b>Loss.</b> Per una sequenza <var>x</var><sub>1..T</sub> e parametri <var>θ</var>:</p>
+      <span class="eq"><var>L</var>(<var>θ</var>) = −${frac('1', '<var>T</var>')} Σ<sub><var>t</var>=1</sub><sup><var>T</var></sup> ln <var>p</var><sub><var>θ</var></sub>(<var>x</var><sub><var>t</var></sub> | <var>x</var><sub>&lt;<var>t</var></sub>)</span>
+      <p>Minimizzarla equivale a massimizzare la verosimiglianza dei dati. Il suo esponenziale è la <b>perplessità</b>: il numero medio di scelte equiprobabili fra cui il modello è "indeciso".</p>
+      <p><b>Gradiente sui logit.</b> Con <var>p</var> = softmax(<var>z</var>) e target <var>y</var>: <span class="m"><var>L</var> = −<var>z</var><sub><var>y</var></sub> + ln Σ<sub><var>j</var></sub> e<sup><var>z</var><sub><var>j</var></sub></sup></span>, quindi</p>
+      <span class="eq">${frac('∂<var>L</var>', '∂<var>z</var><sub><var>k</var></sub>')} = <var>p</var><sub><var>k</var></sub> − [<var>k</var> = <var>y</var>]</span>
+      <p><b>Backpropagation.</b> Per uno strato <var>a</var><sub>l</sub> = <var>σ</var>(<var>z</var><sub>l</sub>), <var>z</var><sub>l</sub> = <var>W</var><sub>l</sub><var>a</var><sub>l−1</sub> + <var>b</var><sub>l</sub>, definendo <var>δ</var><sub>l</sub> = ∂<var>L</var>/∂<var>z</var><sub>l</sub>:</p>
+      <span class="eq"><var>δ</var><sub>l</sub> = (<var>W</var><sub>l+1</sub><sup>T</sup> <var>δ</var><sub>l+1</sub>) ⊙ <var>σ</var>′(<var>z</var><sub>l</sub>), &nbsp;&nbsp; ∂<var>L</var>/∂<var>W</var><sub>l</sub> = <var>δ</var><sub>l</sub> <var>a</var><sub>l−1</sub><sup>T</sup>, &nbsp;&nbsp; ∂<var>L</var>/∂<var>b</var><sub>l</sub> = <var>δ</var><sub>l</sub></span>
+      <p>È esattamente quanto fa il codice della sezione 4. Nel grafo scalare della sezione 2: ∂<var>L</var>/∂<var>y</var> = 2(<var>y</var>−<var>t</var>), ∂<var>L</var>/∂<var>w</var><sub>2</sub> = ∂<var>L</var>/∂<var>y</var> · <var>h</var>, ∂<var>L</var>/∂<var>u</var> = ∂<var>L</var>/∂<var>h</var> · [<var>u</var> &gt; 0], ∂<var>L</var>/∂<var>w</var><sub>1</sub> = ∂<var>L</var>/∂<var>u</var> · <var>x</var>.</p>
+      <p><b>Discesa del gradiente.</b> <span class="m"><var>θ</var> ← <var>θ</var> − <var>η</var>∇<var>L</var></span>. Su una quadratica con curvatura massima <var>λ</var> converge solo se <var>η</var> &lt; 2/<var>λ</var>: oltre, diverge (provalo sulla conca allungata).</p>
+      <p><b>Momentum.</b> <span class="m"><var>v</var> ← β<var>v</var> + <var>g</var>, &nbsp; <var>θ</var> ← <var>θ</var> − <var>ηv</var></span>, con β ≈ 0,9. <b>Adam</b>:</p>
+      <span class="eq"><var>m</var> ← β<sub>1</sub><var>m</var> + (1−β<sub>1</sub>)<var>g</var>, &nbsp; <var>s</var> ← β<sub>2</sub><var>s</var> + (1−β<sub>2</sub>)<var>g</var>², &nbsp; <var>θ</var> ← <var>θ</var> − <var>η</var> ${frac('<var>m</var> / (1−β<sub>1</sub><sup><var>t</var></sup>)', '√(<var>s</var> / (1−β<sub>2</sub><sup><var>t</var></sup>)) + ε')}</span>
+      <p>Dividere per √<var>s</var> dà a ogni parametro un passo di taglia circa <var>η</var> indipendentemente dalla scala del suo gradiente: per questo Adam è robusto in problemi dove parametri diversi hanno curvature molto diverse.</p>`));
+    root.append(details('refresh', 'Ripasso: derivata, gradiente, regola della catena', 'analisi', `
+      <p>La derivata di <var>f</var>(<var>x</var>) dice di quanto cambia <var>f</var> per un piccolo spostamento di <var>x</var>. Il <b>gradiente</b> ∇<var>f</var> di una funzione di molte variabili raccoglie tutte le derivate parziali: punta nella direzione di massima crescita, quindi −∇<var>f</var> è la direzione di massima discesa.</p>
+      <p><b>Regola della catena.</b> Se <var>y</var> = <var>g</var>(<var>x</var>) e <var>L</var> = <var>h</var>(<var>y</var>), allora d<var>L</var>/d<var>x</var> = d<var>L</var>/d<var>y</var> · d<var>y</var>/d<var>x</var>. Esempio: <var>L</var> = (2<var>x</var> − 1)²: <var>y</var> = 2<var>x</var> − 1, d<var>L</var>/d<var>y</var> = 2<var>y</var>, d<var>y</var>/d<var>x</var> = 2, quindi d<var>L</var>/d<var>x</var> = 4(2<var>x</var> − 1). La backpropagation applica questa regola nodo per nodo, partendo dalla loss.</p>`));
+    root.append(el('h2', { text: 'Verifica rapida' }));
+    root.append(quiz([
+      { q: 'Se il modello assegna probabilità 0,5 al token giusto, la loss (in nat) vale…', opts: ['0,5', '≈ 0,69', '≈ 2,3'], ans: 1, why: '−ln 0,5 = ln 2 ≈ 0,693.' },
+      { q: 'Il gradiente della cross-entropy rispetto al logit di un token sbagliato è…', opts: ['sempre 0', 'uguale alla probabilità che il modello gli assegna (positivo: spinge il logit verso il basso)', 'uguale a 1 − p'], ans: 1, why: '∂L/∂z_k = p_k per i token sbagliati e p_y − 1 per quello giusto.' },
+      { q: 'Perché Adam può essere più robusto di SGD semplice?', opts: ['Usa meno memoria', 'Normalizza il passo di ogni parametro con una stima della scala dei suoi gradienti', 'Non usa il gradiente'], ans: 1, why: 'La divisione per √s rende il passo ≈ η per ogni parametro, qualunque sia la scala del suo gradiente.' },
+      { q: 'Nel language model della sezione 4, la loss di training continua a scendere ma quella di validazione risale. Come si chiama il fenomeno?', opts: ['Underfitting', 'Overfitting (memorizzazione)', 'Vanishing gradient'], ans: 1, why: 'Il modello ha pochi dati: impara a memoria il training set e generalizza peggio.' },
+      { q: 'Perché si fa warmup del learning rate?', opts: ['Per far partire più in fretta il training', 'Per evitare passi troppo grandi su un modello appena inizializzato e ancora instabile', 'Per ridurre la memoria'], ans: 1, why: 'All\'inizio i gradienti sono molto rumorosi e le statistiche di Adam non sono ancora affidabili: partire piano evita divergenze.' },
+    ]));
+  },
+});
+
+'use strict';
+/* App shell: builds the rail (the model stack as navigation) and shows one module at a time. */
+(function () {
+  const rail = $('#rail'), stage = $('#stage'), mods = LAB.modules;
+  const seen = new Set();
+  try { JSON.parse(localStorage.getItem('llmlab.seen') || '[]').forEach(x => seen.add(x)); } catch (e) { /* storage may be unavailable */ }
+
+  const nodes = {}, pages = {};
+  const mkNode = m => {
+    const b = el('button', { class: 'node', type: 'button', 'data-id': m.id, onclick: () => show(m.id) },
+      el('span', { class: 'idx', text: String(m.n) }), el('span', { text: m.title }), el('span', { class: 'seen' }));
+    nodes[m.id] = b; return b;
+  };
+
+  rail.append(
+    el('div', {}, el('div', { class: 'brand', html: 'LLM<span>·</span>Lab' }), el('div', { class: 'tag', text: 'come funziona un Large Language Model, un pezzo alla volta' })),
+  );
+  const list = el('div', { class: 'stack' });
+  const first = mods.filter(m => !m.layer), inLayer = mods.filter(m => m.layer), after = mods.filter(m => !m.layer && m.n > Math.max(...inLayer.map(x => x.n)));
+  const before = first.filter(m => m.n < Math.min(...inLayer.map(x => x.n)));
+  before.forEach(m => list.append(mkNode(m)));
+  list.append(el('div', { class: 'layers-label', text: '× N layer (ripetuto)' }));
+  const lay = el('div', { class: 'layers' }); inLayer.forEach(m => lay.append(mkNode(m))); list.append(lay);
+  after.forEach(m => list.append(mkNode(m)));
+  rail.append(list);
+  rail.append(el('div', { class: 'roadmap' }, el('b', { text: 'Prossimi moduli' }),
+    el('ul', {}, ['KV cache e inferenza', 'Fine-tuning, RLHF, DPO', 'Mixture of Experts', 'Interpretabilità', 'RAG, tool use, agenti'].map(t => el('li', { text: t })))));
+  const th = el('div', { class: 'theme-row' });
+  [['auto', 'Auto'], ['light', 'Chiaro'], ['dark', 'Scuro']].forEach(([v, t]) => th.append(button(t, () => {
+    if (v === 'auto') document.documentElement.removeAttribute('data-theme'); else document.documentElement.setAttribute('data-theme', v);
+  })));
+  rail.append(th);
+
+  mods.forEach((m, i) => {
+    const page = el('article', { class: 'module', id: m.id, hidden: true, 'aria-label': m.title });
+    page.append(el('div', { class: 'eyebrow', text: `Modulo ${m.n} · ${m.eyebrow}` }), el('h1', { text: m.heading || m.title }), el('p', { class: 'lede', html: m.lede }));
+    m.build(page);
+    const prev = mods[i - 1], next = mods[i + 1];
+    page.append(el('div', { class: 'next' },
+      prev ? button('← ' + prev.title, () => show(prev.id)) : el('span'),
+      next ? button(next.title + ' →', () => show(next.id), 'primary') : el('span')));
+    pages[m.id] = page; stage.append(page);
+  });
+
+  function show(id, fromHash) {
+    if (!pages[id]) id = mods[0].id;
+    mods.forEach(m => { pages[m.id].hidden = m.id !== id; nodes[m.id].setAttribute('aria-current', String(m.id === id)); });
+    seen.add(id); nodes[id].classList.add('visited');
+    try { localStorage.setItem('llmlab.seen', JSON.stringify([...seen])); } catch (e) { /* ignore */ }
+    try { if (!fromHash) history.replaceState(null, '', '#' + id); } catch (e) { /* ignore */ }
+    if (!fromHash) window.scrollTo({ top: 0 });
+    window.dispatchEvent(new Event('resize'));
+  }
+  seen.forEach(id => nodes[id] && nodes[id].classList.add('visited'));
+  window.addEventListener('hashchange', () => show(location.hash.slice(1), true));
+  show(location.hash.slice(1) || mods[0].id, true);
+  LAB.show = show;
+})();
+
+</script>
