@@ -1,5 +1,7 @@
 # LLM Lab
 
+**Live demo:** https://emanuelefittipaldi.github.io/llm-lab/
+
 An interactive, visual laboratory that explains **how a Large Language Model works**, from raw text to training, one piece at a time.
 Every module follows the same rhythm: *intuition → hands-on lab → the math → quick quiz*.
 
@@ -31,6 +33,9 @@ The app is a single self-contained HTML file: no server, no build tooling, no ru
 The course is complete as planned. Ideas for later: long context and state-space models, multimodality, evaluation and benchmarks, safety and alignment in depth.
 
 ## Run it
+
+The site is published with GitHub Pages from the `docs/` folder (`python3 build.py` regenerates it).
+
 
 ```bash
 python3 build.py          # bundles src/ into dist/index.html

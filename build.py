@@ -13,4 +13,9 @@ html = html.replace("/*__JS__*/", js.replace("</script", "<\\/script"))
 out = root / "dist" / "index.html"
 out.parent.mkdir(exist_ok=True)
 out.write_text(html, encoding="utf-8")
-print(f"built {out} ({len(html)/1024:.0f} KB)")
+# GitHub Pages serves the docs/ folder
+docs = root / "docs"
+docs.mkdir(exist_ok=True)
+(docs / "index.html").write_text(html, encoding="utf-8")
+(docs / ".nojekyll").write_text("", encoding="utf-8")
+print(f"built {out} ({len(html)/1024:.0f} KB) and docs/index.html")
