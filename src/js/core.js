@@ -130,7 +130,7 @@ function heat(ctx, M, x, y, cw, ch, o = {}) {
   for (let i = 0; i < R; i++) for (let j = 0; j < C; j++) {
     const v = M[i][j];
     ctx.fillStyle = t.surface2; ctx.fillRect(x + j * cw, y + i * ch, cw - 1, ch - 1);
-    if (!Number.isFinite(v)) { ctx.strokeStyle = t.line; ctx.beginPath(); ctx.moveTo(x + j * cw + 3, y + i * ch + 3); ctx.lineTo(x + (j + 1) * cw - 4, y + (i + 1) * ch - 4); ctx.stroke(); continue; }
+    if (!Number.isFinite(v)) { ctx.strokeStyle = t.line; ctx.beginPath(); ctx.moveTo(x + j * cw + 3, y + i * ch + 3); ctx.lineTo(x + (j + 1) * cw - 4, y + (i + 1) * ch - 4); ctx.stroke(); if (o.num && cw > 26 && v === -Infinity) text(ctx, '−∞', x + j * cw + cw / 2, y + i * ch + ch / 2 + 4, { align: 'center', size: 11, color: t.muted }); continue; }
     let u;
     if (o.diverging) { u = v / m; ctx.fillStyle = rgba(u >= 0 ? t.accent : t.rose, Math.abs(u) * 0.95); }
     else { u = (v - vmin) / ((vmax - vmin) || 1); ctx.fillStyle = rgba(o.color || t.accent, u * 0.95); }

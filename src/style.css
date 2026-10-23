@@ -201,3 +201,10 @@ details > summary small { font: 500 11px var(--mono); color: var(--muted); text-
   .module h2 { margin-top: 32px; }
 }
 @media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } * { transition: none !important; animation: none !important; } }
+
+/* small editable matrices */
+.mat { display: inline-flex; flex-direction: column; gap: 4px; }
+.mat .mname { font: 700 12px var(--display); color: var(--muted); }
+.mgrid { display: grid; grid-template-columns: repeat(2, 5em); gap: 4px; padding: 4px 8px; border-left: 2px solid var(--ink); border-right: 2px solid var(--ink); border-radius: 4px; }
+.mgrid input { width: 100%; padding: 4px 6px; text-align: right; }
+.mats { display: flex; flex-wrap: wrap; gap: 18px 28px; align-items: flex-end; }

@@ -55,5 +55,12 @@ ok('attention rows sum to 1', out.rows); ok('causal mask zeroes the future', out
 const pv = run(`(() => { const p = pca(LAB.tests.emb.E, 3).proj, v = k => { const m = sum(p.map(r => r[k])) / p.length; return sum(p.map(r => (r[k] - m) ** 2)); }; return [v(0), v(1), v(2)]; })()`);
 ok('PCA components ordered by variance', pv[0] >= pv[1] && pv[1] >= pv[2], pv.map(x => x.toFixed(2)).join(' ≥ '));
 
+
+// --- induction circuit
+const ic = run('LAB.tests.induction')('mario rossi lavora a milano . anna bianchi vive a roma . mario'.split(' '), 8);
+const last = ic.P[ic.P.length - 1], best = ic.vocab[last.indexOf(Math.max(...last))];
+ok('induction head predicts "rossi" after a repeated "mario" (copy from context)', best === 'rossi' && Math.max(...last) > 0.95, best + ' ' + Math.max(...last).toFixed(3));
+ok('induction: rows of head-1 and head-2 sum to 1', ic.A1.every(r => close(r.reduce((a, b) => a + b, 0), 1)) && ic.A2.every(r => close(r.reduce((a, b) => a + b, 0), 1)));
+
 console.log(bad ? `\n${bad} check(s) failed` : '\nall logic checks passed');
 process.exit(bad ? 1 : 0);
