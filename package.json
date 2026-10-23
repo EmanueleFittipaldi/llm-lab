@@ -1,0 +1,11 @@
+{
+  "name": "llm-lab",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Interactive, visual laboratory that explains how Large Language Models work (tokenizer to training).",
+  "scripts": {
+    "build": "python3 build.py",
+    "test": "python3 build.py && node tests/smoke.js && node tests/logic.js"
+  },
+  "devDependencies": { "jsdom": "^24.1.0" }
+}
