@@ -226,5 +226,50 @@ const QT = run('LAB.tests.quant');
   ok('effective bits per weight include the fp16 scales', QT.quantBitsPerWeight(4, 64) === 4.25 && QT.quantBitsPerWeight(4, Infinity) === 4);
 }
 
+// --- module 14: interpretability
+const IT = run('LAB.tests.interp');
+{
+  const toy = run('new LAB.tests.interp.SuperToy(5, 2, 0.5, 0.7, 3)'), Xb = toy.sample(16); toy.lossGrad(Xb);
+  const gW = Float64Array.from(toy.gW), gb = Float64Array.from(toy.gb); let e = 0;
+  const L = () => toy.lossGrad(Xb);
+  for (const [arr, g] of [[toy.W, gW], [toy.b, gb]]) for (const i of [0, 3, arr.length - 1]) { const h = 1e-6, o = arr[i]; arr[i] = o + h; const a = L(); arr[i] = o - h; const b = L(); arr[i] = o; e = Math.max(e, Math.abs((a - b) / (2 * h) - g[i])); }
+  ok('superposition toy: hand-written gradients match finite differences', e < 1e-6, e.toExponential(1));
+  const trainToy = S => { const t = run(`new LAB.tests.interp.SuperToy(5, 2, ${S}, 0.7, 1)`); for (let s = 0; s < 2000; s++) t.step(256); return t; };
+  const alive = t => t.norms().filter(v => v > 0.35).length;
+  const t0 = trainToy(0), t9 = trainToy(0.9), t97 = trainToy(0.97);
+  ok('S = 0: only the 2 most important features are kept (and they are orthogonal)', alive(t0) === 2 && t0.norms()[0] > 0.8 && t0.norms()[1] > 0.8 && Math.abs(t0.gram()[0][1]) < 0.15, t0.norms().map(v => v.toFixed(2)).join(' '));
+  ok('S = 0.9: more than 2 features are kept', alive(t9) >= 3, t9.norms().map(v => v.toFixed(2)).join(' '));
+  const g97 = t97.gram(); ok('S = 0.97: all 5 features are represented, with non-zero interference', alive(t97) === 5 && Math.max(...g97.flatMap((r, i) => r.filter((_, j) => j !== i).map(Math.abs))) > 0.3, t97.norms().map(v => v.toFixed(2)).join(' '));
+  const ang = Array.from({ length: 5 }, (_, i) => Math.atan2(t97.W[5 + i], t97.W[i]) * 180 / Math.PI).sort((a, b) => a - b), gaps = ang.map((a, i) => ((ang[(i + 1) % 5] - a) + 360) % 360);
+  ok('S = 0.97: the five vectors form a near-regular pentagon (gaps ≈ 72°)', gaps.every(g => Math.abs(g - 72) < 22), gaps.map(g => g.toFixed(0)).join(' '));
+}
+{
+  const corpus = run('LAB.tests.CORPUS'), chars = [...new Set(corpus)].sort(), data = Int32Array.from([...corpus].map(c => chars.indexOf(c))), V = chars.length;
+  const trained = IT.trainCharLM(data, V, 800), fresh = run(`new LAB.tests.CharLM(${V}, 3, 8, 64, 7)`);
+  const r1 = IT.probeRun(trained, fresh, data, chars, -1, IT.isVowelCh);
+  ok('probe: trained net decodes "previous char is a vowel" almost perfectly', r1.trained > 0.93, JSON.stringify(Object.fromEntries(Object.entries(r1).map(([k, v]) => [k, +v.toFixed(2)]))));
+  ok('probe: a randomly initialised net is already well above the baseline (information survives random projections)', r1.untrained > r1.majority + 0.15 && r1.trained > r1.untrained + 0.03);
+  ok('probe: shuffled-label control stays near the majority baseline', Math.abs(r1.control - r1.majority) < 0.08);
+}
+
+// --- module 15: retrieval and agents
+const RG = run('LAB.tests.rag');
+{
+  const A = e => RG.safeCalc(e);
+  ok('calculator: precedence, parentheses, decimals, unary minus', A('2+3*4') === 14 && A('(2+3)*4') === 20 && close(A('1,5*4'), 6) && A('-3+5') === 2 && A('10/4') === 2.5 && A('2*(3+(4-1))*2') === 24);
+  const bad2 = ['2+', '(1+2', '1/0', '2**3', 'abc', ''].every(e => { try { A(e); return false; } catch (err) { return true; } });
+  ok('calculator rejects malformed input instead of guessing', bad2);
+  const r1b = RG.ragRecall(RG.bm25Scores, 1), r3b = RG.ragRecall(RG.bm25Scores, 3), r1t = RG.ragRecall(RG.tfidfScores, 1), r3t = RG.ragRecall(RG.tfidfScores, 3);
+  ok('BM25 recall@3 is 8/8 and recall@1 is 6/8 on the labelled queries', r3b === 1 && r1b === 0.75, `bm25 ${r1b * 8}/8, ${r3b * 8}/8 · tfidf ${r1t * 8}/8, ${r3t * 8}/8`);
+  const hs = RG.ragRank(RG.bm25Scores(RG.KB, RG.HARD_QUERY)), goldRank = hs.findIndex(x => x[1] === 3);
+  ok('lexical retrieval fails on the paraphrased query (gold paragraph not first)', goldRank > 0, 'gold rank ' + (goldRank + 1));
+  const ch = RG.ragChunks('abcdefghij', 4, 1); ok('chunking: window 4, overlap 1', JSON.stringify(ch.map(c => c[1])) === JSON.stringify(['abcd', 'defg', 'ghij']));
+  const run1 = RG.agentRun('Quanto fa (17 + 5) * 3?'); ok('agent: arithmetic goes to the calculator', run1[0].action[0] === 'calc' && run1[0].obs === '66');
+  const run2 = RG.agentRun('Quanto pago per 4 corse da 30 minuti?'); ok('agent: search then calc gives 6 €', run2[0].action[0] === 'search' && run2[1].action[0] === 'calc' && run2[1].obs === '6', run2[run2.length - 1].answer);
+  const run3 = RG.agentRun('Quanto pago per 3 corse da 60 minuti con bici elettrica?'); ok('agent: electric bike price (3 € per 30 min) -> 18 €', run3[1].obs === '18', run3[run3.length - 1].answer);
+  const run4 = RG.agentRun('Chi ha vinto il campionato di calcio?'); ok('agent: refuses when nothing relevant is found', /non rispondo|Non ho trovato/.test(run4[run4.length - 1].answer));
+  const run5 = RG.agentRun("Come disdico l'abbonamento?"); ok('agent: answers from the right paragraph', /Annulla rinnovo/.test(run5[0].obs) && /disdire/.test(run5[run5.length - 1].answer));
+}
+
 console.log(bad ? `\n${bad} check(s) failed` : '\nall logic checks passed');
 process.exit(bad ? 1 : 0);

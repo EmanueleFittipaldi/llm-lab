@@ -2786,6 +2786,388 @@ registerModule({
 });
 
 'use strict';
+/* Module 14 - interpretability: a toy model of superposition (trained in the browser) and linear probes on a real small LM */
+
+/* Toy model of superposition (after Elhage et al. 2022): n sparse features, m < n hidden dims.
+   h = W x,  x^ = ReLU(W^T h + b),  loss = sum_i I_i (x_i - x^_i)^2 with importance I_i = decay^i. */
+class SuperToy {
+  constructor(n, m, S, decay, seed = 1) {
+    Object.assign(this, { n, m, S, decay }); this.r = rng(seed);
+    this.W = Float64Array.from({ length: m * n }, () => this.r.gauss() * 0.5); this.b = new Float64Array(n);
+    this.I = Float64Array.from({ length: n }, (_, i) => Math.pow(decay, i));
+    this.gW = new Float64Array(m * n); this.gb = new Float64Array(n);
+    this.mW = new Float64Array(m * n); this.vW = new Float64Array(m * n); this.mb = new Float64Array(n); this.vb = new Float64Array(n); this.t = 0;
+  }
+  sample(B) { const { n, S, r } = this; return Array.from({ length: B }, () => Float64Array.from({ length: n }, () => r() < S ? 0 : r())); }
+  lossGrad(X) {
+    const { n, m, W, b, I, gW, gb } = this, B = X.length, h = new Float64Array(m), dz = new Float64Array(n), dh = new Float64Array(m);
+    gW.fill(0); gb.fill(0); let loss = 0;
+    for (const x of X) {
+      h.fill(0); for (let k = 0; k < m; k++) for (let j = 0; j < n; j++) h[k] += W[k * n + j] * x[j];
+      dh.fill(0);
+      for (let i = 0; i < n; i++) {
+        let z = b[i]; for (let k = 0; k < m; k++) z += W[k * n + i] * h[k];
+        const xh = z > 0 ? z : 0, e = x[i] - xh; loss += I[i] * e * e;
+        dz[i] = z > 0 ? -2 * I[i] * e / B : 0; gb[i] += dz[i];
+        for (let k = 0; k < m; k++) { gW[k * n + i] += h[k] * dz[i]; dh[k] += W[k * n + i] * dz[i]; }
+      }
+      for (let k = 0; k < m; k++) for (let j = 0; j < n; j++) gW[k * n + j] += dh[k] * x[j];
+    }
+    return loss / B;
+  }
+  step(B = 256, lr = 0.03) {
+    const loss = this.lossGrad(this.sample(B)); this.t++; const b1 = 0.9, b2 = 0.999, c1 = 1 - Math.pow(b1, this.t), c2 = 1 - Math.pow(b2, this.t);
+    const upd = (p, g, M, V) => { for (let i = 0; i < p.length; i++) { M[i] = b1 * M[i] + (1 - b1) * g[i]; V[i] = b2 * V[i] + (1 - b2) * g[i] * g[i]; p[i] -= lr * (M[i] / c1) / (Math.sqrt(V[i] / c2) + 1e-8); } };
+    upd(this.W, this.gW, this.mW, this.vW); upd(this.b, this.gb, this.mb, this.vb); return loss;
+  }
+  norms() { const { n, m, W } = this; return Array.from({ length: n }, (_, i) => Math.hypot(...Array.from({ length: m }, (_, k) => W[k * n + i]))); }
+  gram() { const { n, m, W } = this; return Array.from({ length: n }, (_, i) => Array.from({ length: n }, (_, j) => { let s = 0; for (let k = 0; k < m; k++) s += W[k * n + i] * W[k * n + j]; return s; })); }
+}
+
+/* linear probes on the hidden layer of the character-level MLP from module 8 */
+const isVowelCh = c => 'aeiouàèìù'.includes(c), isPunctCh = c => ' ,.\''.includes(c);
+function trainCharLM(data, V, steps, seed = 99, model = null) {
+  const lm = model || new CharLM(V, 3, 8, 64, 7); let q = seed; const rr = () => (q = (q * 1664525 + 1013904223) % 4294967296) / 4294967296;
+  for (let s = 0; s < steps; s++) { const cx = [], yy = []; for (let b = 0; b < 32; b++) { const i = 3 + Math.floor(rr() * (data.length - 3)); cx.push(data.subarray(i - 3, i)); yy.push(data[i]); } lm.lossAndGrad(cx, yy); lm.adam(0.01); }
+  return lm;
+}
+function probeCollect(model, data, chars, pos, n, seed, prop) {
+  let q = seed; const r = () => (q = (q * 1664525 + 1013904223) % 4294967296) / 4294967296, X = [], y = [];
+  for (let k = 0; k < n; k++) { const i = 3 + Math.floor(r() * (data.length - 3)), cx = data.subarray(i - 3, i); model.forward(cx); X.push(Array.from(model.a)); y.push(prop(chars[cx[3 + pos]]) ? 1 : 0); }
+  return { X, y };
+}
+function probeFit(X, y, steps = 150, lr = 0.3, l2 = 0.001) {
+  const d = X[0].length; let w = new Array(d).fill(0), b = 0;
+  for (let s = 0; s < steps; s++) {
+    const g = new Array(d).fill(0); let gb = 0;
+    for (let i = 0; i < X.length; i++) { let z = b; for (let k = 0; k < d; k++) z += X[i][k] * w[k]; const e = 1 / (1 + Math.exp(-z)) - y[i]; for (let k = 0; k < d; k++) g[k] += e * X[i][k]; gb += e; }
+    for (let k = 0; k < d; k++) w[k] -= lr * (g[k] / X.length + l2 * w[k]); b -= lr * gb / X.length;
+  }
+  return { w, b };
+}
+const probeAcc = (m, X, y) => X.reduce((s, x, i) => { let z = m.b; for (let k = 0; k < x.length; k++) z += x[k] * m.w[k]; return s + ((z > 0 ? 1 : 0) === y[i] ? 1 : 0); }, 0) / X.length;
+function shuffled(a, seed) { let q = seed; const r = () => (q = (q * 1664525 + 1013904223) % 4294967296) / 4294967296, b = a.slice(); for (let i = b.length - 1; i > 0; i--) { const j = Math.floor(r() * (i + 1)); [b[i], b[j]] = [b[j], b[i]]; } return b; }
+function probeRun(trained, fresh, data, chars, pos, prop, nTrain = 1500, nTest = 800) {
+  const out = {};
+  for (const [nm, model] of [['trained', trained], ['untrained', fresh]]) {
+    const tr = probeCollect(model, data, chars, pos, nTrain, 5, prop), te = probeCollect(model, data, chars, pos, nTest, 6, prop), m = probeFit(tr.X, tr.y);
+    out[nm] = probeAcc(m, te.X, te.y);
+    if (nm === 'trained') {
+      const mean = a => sum(a) / a.length; out.majority = Math.max(mean(te.y), 1 - mean(te.y));
+      out.control = probeAcc(probeFit(tr.X, shuffled(tr.y, 3)), te.X, shuffled(te.y, 4));
+    }
+  }
+  return out;
+}
+LAB.tests.interp = { SuperToy, trainCharLM, probeRun, isVowelCh, isPunctCh };
+
+registerModule({
+  id: 'm14', n: 14, title: 'Interpretabilità', eyebrow: 'guardare dentro', heading: 'Interpretabilità: che cosa c\'è nei numeri',
+  lede: 'Sappiamo scrivere le equazioni di un LLM, ma non sappiamo dire in generale che cosa calcola. L\'interpretabilità prova a leggere i pesi e le attivazioni come si leggerebbe un programma. Qui vediamo due idee reali, su modelli piccoli che si addestrano nella pagina.',
+  build(root) {
+    root.append(el('div', { html: `
+      <p>Un vettore di attivazioni a 4096 dimensioni non ha dimensioni etichettate: nessuna coordinata significa "è una domanda" o "parla di Parigi". Eppure il modello <i>sembra</i> rappresentare molti più concetti di quante coordinate abbia. Come è possibile? La spiegazione più discussa è la <b>superposition</b>: i concetti sono <b>direzioni</b> nello spazio, non coordinate, e se i concetti compaiono di rado (sono <i>sparsi</i>) ne possono stare molti di più delle dimensioni, a costo di una piccola interferenza.</p>` }));
+
+    /* ---- superposition ---- */
+    const NF = 5, MF = 2; let toy = null, hist = [], running = false, stepsDone = 0;
+    const sS = slider({ label: 'sparsità S (probabilità che una feature sia a zero)', min: 0, max: 0.99, step: 0.01, value: 0.9, fmt: v => v.toFixed(2), onInput: () => reset() });
+    const sD = slider({ label: 'calo di importanza', min: 0.5, max: 1, step: 0.05, value: 0.7, fmt: v => v.toFixed(2), onInput: () => reset() });
+    const cvS = canvasEl(300), cvN = canvasEl(200), out = el('div', { class: 'readout' });
+    const FC = t => [t.accent, t.amber, t.teal, t.rose, '#8b6fb0'];
+    const cS = setupCanvas(cvS, (ctx, w, h, t) => {
+      if (!toy) return;
+      const cols = FC(t), R = Math.min(h, w * 0.55) * 0.42, cx = Math.min(w * 0.3, R + 20), cy = h / 2;
+      ctx.strokeStyle = t.line; ctx.lineWidth = 1; ctx.beginPath(); ctx.arc(cx, cy, R, 0, 7); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(cx - R - 8, cy); ctx.lineTo(cx + R + 8, cy); ctx.moveTo(cx, cy - R - 8); ctx.lineTo(cx, cy + R + 8); ctx.stroke();
+      const ns = toy.norms();
+      for (let i = 0; i < NF; i++) {
+        const x = toy.W[i], y = toy.W[NF + i], len = ns[i], alive = len > 0.35;
+        if (!alive) { ctx.fillStyle = rgba(cols[i], 0.5); ctx.beginPath(); ctx.arc(cx + x * R, cy - y * R, 3, 0, 7); ctx.fill(); continue; }
+        arrow(ctx, cx, cy, cx + x * R, cy - y * R, cols[i], 3, 9);
+        text(ctx, 'f' + (i + 1), cx + x * R * 1.12 + (x >= 0 ? 4 : -4), cy - y * R * 1.12 + 4, { align: x >= 0 ? 'left' : 'right', color: cols[i], size: 13, weight: 700 });
+      }
+      text(ctx, 'ogni freccia: dove una feature viene scritta nel piano 2D (vettore W[:, i])', 8, 14, { color: t.muted, size: 10 });
+      const gx = cx + R + 60, gw = Math.max(80, w - gx - 14), M = toy.gram(), cell = Math.min(34, gw / NF, (h - 70) / NF);
+      if (gw > 90) {
+        text(ctx, 'interferenza WᵀW', gx, 30, { color: t.muted, size: 11 });
+        heat(ctx, M, gx + 22, 48, cell, cell, { t, diverging: true, vmin: -1.2, vmax: 1.2, num: true, rows: ['f1', 'f2', 'f3', 'f4', 'f5'], cols: ['f1', 'f2', 'f3', 'f4', 'f5'], numFmt: v => f2(v, 1) });
+        text(ctx, 'diagonale = lunghezza² · fuori diagonale = interferenza', gx, 48 + NF * cell + 18, { color: t.muted, size: 10 });
+      }
+    });
+    const cN = setupCanvas(cvN, (ctx, w, h, t) => {
+      if (!hist.length) { text(ctx, 'premi "Allena" per vedere la loss', 20, h / 2, { color: t.muted, size: 12 }); return; }
+      const xs = hist.map((_, i) => (i + 1) * 25);
+      chart(ctx, w, h, t, [{ xs, ys: hist, color: t.accent, lw: 2.5, label: 'loss (media su un batch)' }], { xlabel: 'passi', ymin: 0, nx: 5 });
+    });
+    function summary() {
+      const ns = toy.norms(), alive = ns.filter(v => v > 0.35).length;
+      out.innerHTML = `passi: <b>${stepsDone}</b> · feature rappresentate (lunghezza > 0,35): <b>${alive}</b> su ${NF} in uno spazio a <b>${MF}</b> dimensioni · lunghezze: ${ns.map((v, i) => 'f' + (i + 1) + ' ' + f2(v, 2)).join(' · ')}`;
+    }
+    function reset() { running = false; stepsDone = 0; hist = []; toy = new SuperToy(NF, MF, sS.get(), sD.get(), 1); summary(); cS.redraw(); cN.redraw(); }
+    function frame() {
+      if (!running) return;
+      let last = 0; for (let k = 0; k < 25; k++) { last = toy.step(256); stepsDone++; if (stepsDone % 25 === 0) hist.push(last); }
+      summary(); cS.redraw(); cN.redraw();
+      if (stepsDone >= 2000) { running = false; return; }
+      requestAnimationFrame(frame);
+    }
+    const trainBtn = button('Allena (2000 passi)', () => { if (stepsDone >= 2000) reset(); if (!running) { running = true; requestAnimationFrame(frame); } }, 'primary');
+    root.append(lab('Laboratorio · cinque feature, due dimensioni (si addestra davvero, con Adam)',
+      el('p', { html: 'Il modello deve comprimere 5 feature in 2 numeri (<var>h</var> = <var>W</var><var>x</var>) e poi ricostruirle (<var>x̂</var> = ReLU(<var>W</var><sup>T</sup><var>h</var> + <var>b</var>)). Ogni feature è a zero con probabilità <var>S</var>, altrimenti vale un numero casuale in [0, 1]. La feature 1 è la più importante, la 5 la meno. Cambiando un cursore il modello riparte da capo.' }),
+      controls(sS.el, sD.el), controls(trainBtn, button('Azzera', () => reset())), cvS, out, cvN,
+      el('p', { class: 'muted', html: 'Con <b>S = 0</b> (feature sempre presenti) il modello tiene solo le due più importanti, ortogonali, e ignora le altre. Alzando <b>S</b> compaiono una terza, una quarta e, con <b>S</b> molto alta, tutte e cinque le feature, disposte come i vertici di un pentagono: non sono più ortogonali, quindi si disturbano a vicenda (la matrice WᵀW ha valori fuori diagonale non nulli), ma tanto raramente sono attive insieme che il guadagno supera il costo. Il bias negativo e la ReLU filtrano parte dell\'interferenza.' })));
+    reset();
+
+    /* ---- probes ---- */
+    const PROP = { vowel: ['è una vocale', isVowelCh], punct: ['è spazio o punteggiatura', isPunctCh] };
+    let propK = 'vowel', result = null, busy = false;
+    const psel = select(Object.entries(PROP).map(([k, v]) => [k, 'il carattere ' + v[0]]), propK, v => { propK = v; }, 'proprietà da cercare');
+    const cvP = canvasEl(250), outP = el('div', { class: 'readout' });
+    const cP = setupCanvas(cvP, (ctx, w, h, t) => {
+      if (!result) { text(ctx, 'premi il pulsante: allena il modello del modulo 8 per 800 passi e addestra le sonde', 16, h / 2, { color: t.muted, size: 12 }); return; }
+      const left = 44, top = 24, bot = 40, groups = [-1, -2, -3], series = [['majority', 'classe più frequente', t.muted], ['control', 'controllo: etichette mescolate', t.rose], ['untrained', 'rete NON addestrata', t.amber], ['trained', 'rete addestrata', t.accent]];
+      const gw = (w - left - 10) / 3, bw = gw / (series.length + 1), Y = v => h - bot - v * (h - bot - top);
+      for (let i = 0; i <= 4; i++) { ctx.strokeStyle = rgba(t.line, 0.7); ctx.beginPath(); ctx.moveTo(left, Y(i / 4)); ctx.lineTo(w - 6, Y(i / 4)); ctx.stroke(); text(ctx, f2(i / 4, 2), left - 5, Y(i / 4) + 4, { align: 'right', color: t.muted, size: 10 }); }
+      groups.forEach((p, gi) => {
+        series.forEach(([k, , col], si) => { const v = result[p][k], x = left + gi * gw + bw * (si + 0.5); ctx.fillStyle = col; ctx.fillRect(x, Y(v), bw * 0.85, h - bot - Y(v)); text(ctx, f2(v, 2), x + bw * 0.42, Y(v) - 4, { align: 'center', color: t.ink, size: 10 }); });
+        text(ctx, p === -1 ? 'carattere precedente (posizione −1)' : 'posizione ' + p, left + gi * gw + gw / 2, h - bot + 16, { align: 'center', color: t.ink, size: 11 });
+      });
+      let lx = left; series.forEach(([, nm, col]) => { ctx.fillStyle = col; ctx.fillRect(lx, 6, 10, 10); text(ctx, nm, lx + 14, 15, { color: t.muted, size: 10 }); lx += 30 + nm.length * 5.6; });
+    });
+    function runProbe() {
+      if (busy) return; busy = true; outP.textContent = 'calcolo in corso (addestramento + sonde)…';
+      requestAnimationFrame(() => requestAnimationFrame(() => {
+        try {
+          const chars = [...new Set(CORPUS)].sort(), data = Int32Array.from([...CORPUS].map(c => chars.indexOf(c))), V = chars.length;
+          const trained = trainCharLM(data, V, 800), fresh = new CharLM(V, 3, 8, 64, 7); result = {};
+          [-1, -2, -3].forEach(p => { result[p] = probeRun(trained, fresh, data, chars, p, PROP[propK][1]); });
+          const r1 = result[-1];
+          outP.innerHTML = `proprietà: <b>il carattere ${PROP[propK][0]}</b>. Posizione −1: rete addestrata <b>${f2(r1.trained * 100, 0)}%</b>, non addestrata ${f2(r1.untrained * 100, 0)}%, controllo ${f2(r1.control * 100, 0)}% (classe più frequente: ${f2(r1.majority * 100, 0)}%).`;
+        } catch (e) { outP.textContent = 'errore: ' + e.message; }
+        busy = false; cP.redraw();
+      }));
+    }
+    root.append(lab('Laboratorio · sonde lineari (linear probes) su un modello vero',
+      el('p', { html: 'Prendiamo il language model a caratteri del modulo 8, lo addestriamo per 800 passi, e per migliaia di contesti da 3 caratteri leggiamo le 64 attivazioni dello strato nascosto. Poi addestriamo un classificatore <b>lineare</b> che, da quelle attivazioni, prova a indovinare una proprietà di uno dei caratteri in ingresso. Se ci riesce, l\'informazione è presente in modo linearmente leggibile.' }),
+      controls(psel, button('Allena il modello e sonda', runProbe, 'primary')), cvP, outP,
+      el('p', { class: 'muted', html: 'Come si legge: la <b>classe più frequente</b> è la soglia da battere; il <b>controllo</b> (stesse sonde su etichette mescolate) dice se la sonda sta solo memorizzando. La rete addestrata batte la non addestrata, ma <i>anche la rete a pesi casuali</i> fa molto meglio del caso: una proiezione casuale conserva già molta informazione sull\'ingresso. Per questo una sonda riuscita non basta a dire che il modello <i>usa</i> quella informazione.' })));
+    cP.redraw();
+
+    root.append(el('h2', { text: 'Gli strumenti dell\'interpretabilità' }));
+    root.append(el('ul', { class: 'prose', html: `
+      <li><b>Probing</b>: sonde lineari sulle attivazioni (sopra). Mostra che un'informazione è <i>presente</i>, non che è <i>usata</i>.</li>
+      <li><b>Intervento causale</b> (<i>activation patching</i>, ablation): si sostituisce o si azzera un'attivazione e si guarda come cambia l'uscita. È la prova che una componente conta davvero, e il metodo con cui si è mostrato il circuito delle induction head (modulo 5).</li>
+      <li><b>Logit lens</b>: si applica l'unembedding agli stati intermedi del residual stream per vedere quale token "starebbe prevedendo" il modello dopo ogni layer.</li>
+      <li><b>Sparse autoencoder (SAE)</b>: si addestra un autoencoder con molte più unità che dimensioni e con penalità di sparsità sulle attivazioni di un layer, per scomporre la superposition in direzioni più interpretabili ("feature"). Il laboratorio qui sopra mostra proprio il fenomeno che gli SAE cercano di invertire.</li>
+      <li><b>Circuiti</b>: si cerca il sottoinsieme di componenti (head, MLP) che implementa un comportamento specifico, per esempio copiare un nome visto prima.</li>
+      <li><b>Limiti</b>: le feature trovate sono spesso interpretabili solo in parte, i metodi sono costosi su modelli grandi e una spiegazione plausibile non è per forza fedele a ciò che il modello calcola davvero.</li>` }));
+
+    root.append(details('math', 'La matematica: perché la superposition può convenire', 'formule', `
+      <p>Con <var>x̂</var> = ReLU(<var>W</var><sup>T</sup><var>W</var> <var>x</var> + <var>b</var>) l'uscita per la feature <var>i</var> è, senza ReLU, <var>x̂</var><sub>i</sub> = ‖<var>w</var><sub>i</sub>‖² <var>x</var><sub>i</sub> + Σ<sub>j≠i</sub> (<var>w</var><sub>i</sub>·<var>w</var><sub>j</sub>) <var>x</var><sub>j</sub> + <var>b</var><sub>i</sub>, dove <var>w</var><sub>i</sub> è la colonna <i>i</i> di <var>W</var>.</p>
+      <p>Il primo termine è il segnale (ideale: ‖<var>w</var><sub>i</sub>‖ = 1), il secondo è l'<b>interferenza</b> dalle altre feature: se <var>w</var><sub>i</sub> e <var>w</var><sub>j</sub> non sono ortogonali, quando <var>x</var><sub>j</sub> è attiva "sporca" l'uscita <i>i</i>.</p>
+      <p>Se ogni feature è attiva con probabilità 1 − <var>S</var>, la probabilità che due feature siano attive insieme è (1 − <var>S</var>)². Con <var>S</var> alta le collisioni sono rare e l'errore atteso dovuto all'interferenza cresce solo con questo fattore piccolo, mentre il guadagno di rappresentare una feature in più è lineare. Il confronto tra i due termini decide quante feature entrano.</p>
+      <p>Con <var>m</var> = 2 e <var>n</var> = 5 simmetriche, la configurazione che minimizza l'interferenza massima è il pentagono regolare (vettori a 72°), esattamente la figura che emerge. In dimensioni alte il numero di direzioni quasi ortogonali cresce esponenzialmente con <var>m</var> (fenomeno di concentrazione della misura, imparentato col lemma di Johnson-Lindenstrauss), il che rende plausibile che un modello reale conservi molte più feature che dimensioni.</p>
+      <p><b>Sonda lineare.</b> Con attivazioni <var>a</var> ∈ ℝ<sup>64</sup> e proprietà binaria <var>y</var> si addestra una regressione logistica <var>p</var>(<var>y</var>=1 | <var>a</var>) = σ(<var>v</var>·<var>a</var> + <var>c</var>) minimizzando la cross-entropy; l'accuratezza su dati mai visti misura la leggibilità <i>lineare</i> di <var>y</var>.</p>`));
+    root.append(el('h2', { text: 'Verifica rapida' }));
+    root.append(quiz([
+      { q: 'Che cosa significa che un modello usa "superposition"?', opts: ['Che ogni neurone rappresenta un solo concetto', 'Che rappresenta più feature che dimensioni, usando direzioni non ortogonali', 'Che ha più layer del necessario'], ans: 1, why: 'Le feature sono direzioni; se sono sparse, molte possono condividere uno spazio più piccolo, a costo di una certa interferenza.' },
+      { q: 'Una sonda lineare legge una proprietà con alta accuratezza. Cosa si può concludere?', opts: ['Che il modello usa quella proprietà per decidere', 'Che l\'informazione è presente nelle attivazioni in forma linearmente leggibile', 'Che il modello capisce quel concetto'], ans: 1, why: 'Il probing dice che l\'informazione c\'è. Per sapere se conta serve un intervento causale, e un controllo con una rete a pesi casuali.' },
+      { q: 'Perché con sparsità bassa il modello tiene solo due feature ortogonali?', opts: ['Perché le altre sono inutili', 'Perché se le feature sono quasi sempre attive l\'interferenza costa troppo, conviene rappresentare bene le più importanti', 'Perché il bias lo impone'], ans: 1, why: 'Con S bassa le collisioni sono frequenti e l\'interferenza pesa, quindi la soluzione ortogonale vince.' },
+    ]));
+  },
+});
+
+'use strict';
+/* Module 15 - RAG, chunking, tool use and the agent loop. Everything runs for real in the page except the
+   "planner" of the agent, which is a hand-written rule set standing in for the LLM. */
+
+/* a fictional knowledge base (a bike-sharing app) so that the model could not already know the answers */
+const KB = [
+  "Per sbloccare una bici apri l'app, inquadra il codice QR sul manubrio e attendi il suono di conferma. Il lucchetto si apre in pochi secondi.",
+  "Una corsa costa 1,50 € ogni 30 minuti. Dopo la prima mezz'ora si paga 1,50 € per ogni mezz'ora successiva.",
+  "L'abbonamento annuale costa 36 € e comprende tutte le corse fino a 45 minuti. Si rinnova automaticamente ogni anno.",
+  "Per disdire l'abbonamento vai nel menu Profilo, scegli Gestisci abbonamento e premi Annulla rinnovo. La disdetta vale dal ciclo successivo.",
+  "Se la bici ha un guasto, premi Segnala problema nell'app e scegli il tipo di guasto: freni, catena, ruote o altro. La corsa in corso viene chiusa gratuitamente.",
+  "Le bici si restituiscono in qualunque stazione con almeno uno stallo libero. Spingi la bici nello stallo finché senti il clic e attendi la conferma sull'app.",
+  "Se non trovi stalli liberi, l'app indica la stazione più vicina e concede 10 minuti gratuiti per raggiungerla.",
+  "Le biciclette elettriche sono contrassegnate da un adesivo verde e costano 3 € ogni 30 minuti. La batteria garantisce circa 60 chilometri di autonomia.",
+  "Il servizio è attivo tutti i giorni dalle 6:00 alle 24:00. Di notte le stazioni restano aperte ma le bici non si sbloccano.",
+  "In caso di furto o smarrimento di una bici durante la corsa, chiama subito il numero verde dell'assistenza e presenta denuncia entro 48 ore.",
+  "Per ricaricare il credito usa carta o portafoglio digitale dal menu Pagamenti. Il credito minimo per sbloccare una bici è di 5 €.",
+  "I minori di 14 anni non possono usare il servizio. Dai 14 ai 17 anni serve l'autorizzazione di un genitore caricata nell'app.",
+  "Il casco non è fornito ma è consigliato. È vietato trasportare passeggeri sulla bici, anche bambini.",
+  "Il numero verde dell'assistenza è attivo dalle 8:00 alle 20:00. Fuori orario puoi scrivere dalla sezione Aiuto dell'app.",
+];
+/* labelled queries: [text, index of the passage that answers it, a phrase that must survive chunking] */
+const QUERIES = [
+  ['Come sblocco la bici?', 0, 'codice QR'], ['Quanto costa una corsa?', 1, '1,50 € ogni 30 minuti'], ['Come disdico l\'abbonamento?', 3, 'Annulla rinnovo'],
+  ['Cosa faccio se i freni non funzionano?', 4, 'Segnala problema'], ['Dove restituisco la bici?', 5, 'uno stallo libero'], ['Quanto dura la batteria delle bici elettriche?', 7, '60 chilometri'],
+  ['A che ora chiude il servizio?', 8, 'dalle 6:00 alle 24:00'], ['Posso usare il servizio a 16 anni?', 11, 'autorizzazione di un genitore'],
+];
+const HARD_QUERY = 'Come faccio a smettere di pagare ogni anno?';
+const STOPW = new Set('il lo la i gli le un uno una di a da in con su per tra fra e o ma se che non è sono si l d c all dell dal nel sul del della dei delle al alla alle nell sull ogni anche come cosa dove quanto quando posso faccio fare ha ho più'.split(' '));
+/* crude Italian "stemming": keep the first 5 letters. Good enough to match abbonamento/abbonamenti, restituisco/restituiscono */
+const ragTokens = s => s.toLowerCase().split(/[^a-zàèéìòù0-9]+/).filter(t => t && !STOPW.has(t)).map(t => t.length > 5 ? t.slice(0, 5) : t);
+function ragStats(docs) {
+  const D = docs.map(ragTokens), N = D.length, avg = D.reduce((a, d) => a + d.length, 0) / N, df = {};
+  D.forEach(d => new Set(d).forEach(t => { df[t] = (df[t] || 0) + 1; }));
+  return { D, N, avg, df };
+}
+function bm25Scores(docs, q, k1 = 1.5, b = 0.75) {
+  const { D, N, avg, df } = ragStats(docs), qt = [...new Set(ragTokens(q))];
+  return D.map(d => { const tf = {}; d.forEach(t => { tf[t] = (tf[t] || 0) + 1; }); return qt.reduce((s, t) => { if (!tf[t]) return s; const idf = Math.log(1 + (N - df[t] + 0.5) / (df[t] + 0.5)); return s + idf * tf[t] * (k1 + 1) / (tf[t] + k1 * (1 - b + b * d.length / avg)); }, 0); });
+}
+function tfidfScores(docs, q) {
+  const { D, N, df } = ragStats(docs), idf = t => Math.log(N / (df[t] || 1)) + 1, vec = ts => { const v = {}; ts.forEach(t => { v[t] = (v[t] || 0) + idf(t); }); return v; };
+  const qv = vec(ragTokens(q)), qn = Math.sqrt(sum(Object.values(qv).map(x => x * x))) || 1;
+  return D.map(d => { const dv = vec(d), dn = Math.sqrt(sum(Object.values(dv).map(x => x * x))) || 1; return sum(Object.keys(qv).map(t => (dv[t] || 0) * qv[t])) / (dn * qn); });
+}
+const ragRank = s => s.map((v, i) => [v, i]).sort((a, b) => b[0] - a[0]);
+function ragChunks(text, size, overlap) { const out = []; for (let s = 0; s < text.length; s += Math.max(1, size - overlap)) { out.push([s, text.slice(s, s + size)]); if (s + size >= text.length) break; } return out; }
+const ragRecall = (fn, k) => QUERIES.filter(([q, g]) => ragRank(fn(KB, q)).slice(0, k).some(x => x[1] === g)).length / QUERIES.length;
+
+/* a safe arithmetic evaluator (recursive descent; no eval). Accepts decimal comma or point. */
+function safeCalc(expr) {
+  const s = expr.replace(/,/g, '.').replace(/[x×]/g, '*').replace(/÷/g, '/').replace(/\s+/g, ''); let i = 0;
+  const peek = () => s[i], num = () => { const m = /^\d+(\.\d+)?/.exec(s.slice(i)); if (!m) throw new Error('numero atteso in posizione ' + i); i += m[0].length; return parseFloat(m[0]); };
+  function atom() { if (peek() === '(') { i++; const v = add(); if (peek() !== ')') throw new Error('manca )'); i++; return v; } if (peek() === '-') { i++; return -atom(); } return num(); }
+  function mul() { let v = atom(); while (peek() === '*' || peek() === '/') { const o = s[i++], r = atom(); if (o === '/' && r === 0) throw new Error('divisione per zero'); v = o === '*' ? v * r : v / r; } return v; }
+  function add() { let v = mul(); while (peek() === '+' || peek() === '-') { const o = s[i++], r = mul(); v = o === '+' ? v + r : v - r; } return v; }
+  const v = add(); if (i !== s.length) throw new Error('carattere inatteso "' + s[i] + '"'); return v;
+}
+/* the agent: a loop of (thought, action, observation) until it can answer. The planner below is a set of rules, NOT an LLM. */
+function agentRun(question) {
+  const steps = [], tool = { search: q => { const r = ragRank(bm25Scores(KB, q)); return { top: r[0], text: KB[r[0][1]], idx: r[0][1] }; }, calc: e => safeCalc(e) };
+  const q = question.trim(), norm = q.replace(/^(quanto fa|calcola|quanto fa)\s*/i, '').replace(/[?]/g, '').trim();
+  if (/^[\d\s+\-*/().,x×÷]+$/.test(norm) && /\d/.test(norm)) {
+    steps.push({ thought: 'La domanda è un\'espressione aritmetica: serve la calcolatrice, non la ricerca.', action: ['calc', norm] });
+    try { const v = tool.calc(norm); steps[0].obs = String(+v.toFixed(6)); steps.push({ answer: `Il risultato è ${+v.toFixed(6)}.` }); } catch (e) { steps[0].obs = 'errore: ' + e.message; steps.push({ answer: 'Non riesco a calcolarlo: ' + e.message + '.' }); }
+    return steps;
+  }
+  const nRides = /(\d+)\s+(corse|corsa)/i.exec(q), mins = /(\d+)\s*minuti/i.exec(q), ele = /elettric/i.test(q);
+  if (/(quanto)\s+(pago|costano|spendo)/i.test(q) && nRides) {
+    const sq = ele ? 'quanto costa una corsa con bici elettrica' : 'quanto costa una corsa';
+    steps.push({ thought: 'Mi serve il prezzo: lo cerco nella knowledge base, poi faccio il conto.', action: ['search', sq] });
+    const r = tool.search(sq); steps[0].obs = `[${r.idx + 1}] ${r.text}`;
+    const m = /(\d+(?:,\d+)?)\s*€ ogni (\d+) minuti/.exec(r.text);
+    if (!m) { steps.push({ answer: 'Non ho trovato il prezzo nei documenti.' }); return steps; }
+    const price = parseFloat(m[1].replace(',', '.')), block = +m[2], blocks = mins ? Math.ceil(+mins[1] / block) : 1, expr = `${nRides[1]} * ${blocks} * ${price}`;
+    steps.push({ thought: `Il documento dice ${m[1]} € ogni ${block} minuti. ${mins ? `Una corsa da ${mins[1]} minuti vale ${blocks} blocchi.` : 'Assumo un blocco per corsa.'} Calcolo ${expr}.`, action: ['calc', expr] });
+    const v = tool.calc(expr); steps[1].obs = String(+v.toFixed(2));
+    steps.push({ answer: `${nRides[1]} corse${mins ? ' da ' + mins[1] + ' minuti' : ''}${ele ? ' in bici elettrica' : ''}: ${(+v.toFixed(2)).toString().replace('.', ',')} €.` });
+    return steps;
+  }
+  steps.push({ thought: 'È una domanda sul servizio: cerco nella knowledge base.', action: ['search', q] });
+  const r = tool.search(q); steps[0].obs = `[${r.idx + 1}] ${r.text} (punteggio ${f2(r.top[0], 2)})`;
+  if (r.top[0] < 1.5) steps.push({ thought: 'Il punteggio è troppo basso: i documenti non parlano di questo.', answer: 'Non ho trovato nulla di pertinente nei documenti, quindi non rispondo.' });
+  else steps.push({ thought: 'Il passaggio trovato risponde alla domanda.', answer: r.text.split('. ')[0].replace(/\.?$/, '.') });
+  return steps;
+}
+LAB.tests.rag = { KB, QUERIES, HARD_QUERY, ragTokens, bm25Scores, tfidfScores, ragRank, ragChunks, ragRecall, safeCalc, agentRun };
+
+registerModule({
+  id: 'm15', n: 15, title: 'RAG, tool e agenti', eyebrow: 'dare al modello occhi e mani', heading: 'RAG, tool use e agenti',
+  lede: 'Un LLM sa solo ciò che ha nei pesi e ciò che gli metti nel contesto. Il RAG gli mette nel contesto i documenti giusti; il tool use gli permette di chiamare programmi (una calcolatrice, una ricerca); un agente ripete il ciclo finché il lavoro è finito.',
+  build(root) {
+    root.append(el('div', { html: `
+      <p>I limiti sono due: la conoscenza nei pesi è <b>congelata</b> alla data del training e non contiene i tuoi documenti privati; e il modello <b>calcola male</b> e non può agire sul mondo. Entrambi si aggirano <i>fuori</i> dal modello:</p>
+      <p><b>RAG</b> (<i>retrieval-augmented generation</i>): data una domanda, si <b>cerca</b> in una base di documenti, si prendono i passaggi migliori e li si incolla nel prompt prima della domanda. Il modello risponde leggendo quei passaggi. Qui sotto una piccola base di conoscenza (14 paragrafi di un servizio di bike sharing <i>inventato</i>, così nessun modello li conosce già) e un motore di ricerca vero scritto nella pagina.</p>` }));
+
+    /* ---- Lab 1: retrieval ---- */
+    let method = 'bm25', qtext = QUERIES[2][0];
+    const qin = el('input', { type: 'text', class: 'txt', value: qtext, 'aria-label': 'domanda', style: 'min-width:min(100%,360px);font:500 14px var(--mono);padding:6px 8px;border:1px solid var(--line);border-radius:6px;background:var(--surface);color:var(--ink)' });
+    const qsel = select([...QUERIES.map(q => [q[0], q[0]]), [HARD_QUERY, HARD_QUERY + '  (difficile)']], qtext, v => { qin.value = v; qtext = v; retr(); }, 'esempi');
+    const msel = select([['bm25', 'BM25 (parole chiave, con normalizzazione)'], ['tfidf', 'TF-IDF + coseno']], method, v => { method = v; retr(); }, 'metodo');
+    const list = el('div', { class: 'passages' }), promptBox = el('div', { class: 'readout', style: 'white-space:pre-wrap;border:1px dashed var(--line);border-radius:8px;padding:10px 12px;background:var(--surface)' }), evalOut = el('div', { class: 'readout' });
+    const scoreFn = () => method === 'bm25' ? bm25Scores : tfidfScores;
+    function retr() {
+      qtext = qin.value; const sc = scoreFn()(KB, qtext), r = ragRank(sc), mx = r[0][0] || 1, gold = (QUERIES.find(q => q[0] === qtext) || [])[1];
+      list.innerHTML = '';
+      r.slice(0, 5).forEach(([s, i], k) => list.append(el('div', { style: `display:flex;gap:10px;align-items:flex-start;padding:6px 0;border-top:1px solid var(--line);${k < 3 ? '' : 'opacity:0.6'}` },
+        el('div', { style: 'flex:none;width:120px' }, el('div', { class: 'readout', text: `#${k + 1} · par. ${i + 1}${gold === i ? ' ✓' : ''}` }), el('div', { style: `height:6px;border-radius:3px;margin-top:4px;background:var(--accent);width:${Math.max(2, s / mx * 100)}%` }), el('div', { class: 'readout', style: 'font-size:11px;color:var(--muted)', text: f2(s, 3) })),
+        el('div', { style: 'font-size:0.93em', text: KB[i] }))));
+      const ctxs = r.slice(0, 3).filter(x => x[0] > 0).map(x => '[' + (x[1] + 1) + '] ' + KB[x[1]]);
+      promptBox.textContent = `Rispondi usando solo i documenti qui sotto. Se non bastano, dì che non lo sai.\n\n${ctxs.join('\n') || '(nessun documento trovato)'}\n\nDomanda: ${qtext}\nRisposta:`;
+      const words = promptBox.textContent.split(/\s+/).length;
+      evalOut.innerHTML = `prompt assemblato: ~<b>${Math.round(words * 1.5)}</b> token (stima) · sui ${QUERIES.length} esempi etichettati questo metodo trova il paragrafo giusto al primo posto in <b>${Math.round(ragRecall(scoreFn(), 1) * 8)}/8</b> casi, tra i primi 3 in <b>${Math.round(ragRecall(scoreFn(), 3) * 8)}/8</b>`;
+    }
+    qin.addEventListener('input', () => retr());
+    root.append(lab('Laboratorio · retrieval (BM25 e TF-IDF veri, su 14 paragrafi)', controls(qsel, msel), el('div', { class: 'controls' }, qin), list, el('div', { class: 'lab-title', text: 'Il prompt che arriva all\'LLM (top-3 paragrafi)' }), promptBox, evalOut,
+      el('p', { class: 'muted', html: 'Scrivi una tua domanda o scegli un esempio. Prova la domanda <b>difficile</b>: "smettere di pagare" e "disdire l\'abbonamento" significano la stessa cosa ma non hanno parole in comune, e la ricerca per parole chiave la sbaglia. Questo è il caso in cui servono i <b>modelli di embedding</b> (modulo 2): trasformano testi con significato simile in vettori vicini, anche senza parole condivise. Nei sistemi veri si combinano i due (ricerca ibrida).' })));
+    retr();
+
+    /* ---- Lab 2: chunking ---- */
+    const DOC = KB.join(' ');
+    const sSize = slider({ label: 'dimensione chunk (caratteri)', min: 60, max: 1200, step: 20, value: 200, onInput: () => chunkUpd() });
+    const sOv = slider({ label: 'sovrapposizione', min: 0, max: 200, step: 20, value: 40, onInput: () => chunkUpd() });
+    const cvC = canvasEl(230), outC = el('div', { class: 'readout' });
+    const sweep = ov => { const sizes = range(30).map(i => 60 + i * 40); return { sizes, hit: sizes.map(sz => { const C = ragChunks(DOC, sz, Math.min(ov, sz - 20)).map(c => c[1]); return QUERIES.filter(([q, , key]) => { const s = bm25Scores(C, q); return C[s.indexOf(Math.max(...s))].includes(key); }).length / QUERIES.length; }), sent: sizes.map(sz => Math.min(1, sz / DOC.length)) }; };
+    const cc = setupCanvas(cvC, (ctx, w, h, t) => {
+      const sw = sweep(sOv.get()), c = chart(ctx, w, h, t, [{ xs: sw.sizes, ys: sw.hit, color: t.accent, lw: 2.5, label: 'risposte trovate nel chunk al primo posto' }, { xs: sw.sizes, ys: sw.sent, color: t.amber, lw: 2, dash: [5, 4], label: 'frazione del documento inviata al modello' }], { xlabel: 'dimensione del chunk (caratteri)', ymin: 0, ymax: 1.02, nx: 5 });
+      ctx.strokeStyle = t.rose; ctx.setLineDash([4, 4]); ctx.beginPath(); ctx.moveTo(c.X(sSize.get()), c.y1); ctx.lineTo(c.X(sSize.get()), c.y0); ctx.stroke(); ctx.setLineDash([]);
+    });
+    function chunkUpd() {
+      const sz = sSize.get(), ov = Math.min(sOv.get(), sz - 20), C = ragChunks(DOC, sz, ov).map(c => c[1]);
+      const hit = QUERIES.filter(([q, , key]) => { const s = bm25Scores(C, q); return C[s.indexOf(Math.max(...s))].includes(key); }).length, intact = QUERIES.filter(([, , key]) => C.some(c => c.includes(key))).length;
+      outC.innerHTML = `<b>${C.length}</b> chunk da ~${sz} caratteri (sovrapposizione ${ov}) · la frase-chiave sopravvive intera in almeno un chunk per <b>${intact}/8</b> domande · il chunk al primo posto contiene la risposta per <b>${hit}/8</b> · il modello riceve ~${sz} caratteri (il ${f2(Math.min(1, sz / DOC.length) * 100, 0)}% dell'intero documento)`;
+      cc.redraw();
+    }
+    root.append(lab('Laboratorio · chunking: a che dimensione si tagliano i documenti',
+      el('p', { html: 'In pratica i documenti sono lunghi e si <b>spezzano in chunk</b> prima di indicizzarli. Qui l\'intera base di 14 paragrafi è un unico testo da tagliare in finestre di dimensione fissa. Misura: per ognuna delle 8 domande, il chunk migliore secondo BM25 contiene la frase che dà la risposta?' }),
+      controls(sSize.el, sOv.el), cvC, outC,
+      el('p', { class: 'muted', html: 'Chunk piccoli tagliano le frasi a metà (la risposta si spezza) e perdono il contesto; chunk grandi trovano più facilmente la risposta ma ne mandano molta di più al modello (costo, rumore, e il modello si distrae). La curva è ruvida perché sono solo 8 domande: è un esempio, non una legge. Nella pratica si taglia su confini naturali (paragrafi, titoli) invece che a caratteri fissi.' })));
+    chunkUpd();
+
+    /* ---- Lab 3: agent loop ---- */
+    const aIn = el('input', { type: 'text', value: 'Quanto pago per 3 corse da 60 minuti con bici elettrica?', 'aria-label': 'domanda per l\'agente', style: 'min-width:min(100%,380px);font:500 14px var(--mono);padding:6px 8px;border:1px solid var(--line);border-radius:6px;background:var(--surface);color:var(--ink)' });
+    const trace = el('div', { class: 'trace' });
+    const EX = [['Quanto fa (17 + 5) * 3?', 'calcolo semplice'], ["Come disdico l'abbonamento?", 'domanda sui documenti'], ['Quanto pago per 4 corse da 30 minuti?', 'ricerca + calcolo'], ['Quanto pago per 3 corse da 60 minuti con bici elettrica?', 'ricerca + calcolo (bici elettrica)'], ['Come sblocco la bici?', 'la ricerca sbaglia paragrafo'], ['Chi ha vinto il campionato di calcio?', 'fuori dai documenti']];
+    function runAgent() {
+      const st = agentRun(aIn.value); trace.innerHTML = '';
+      st.forEach((s, i) => {
+        const row = (k, v, col) => el('div', { style: 'display:flex;gap:10px;padding:3px 0' }, el('b', { style: `flex:none;width:92px;color:${col};font:600 11px var(--display);text-transform:uppercase;letter-spacing:0.08em;padding-top:2px`, text: k }), el('div', { class: 'readout', style: 'font-weight:400', text: v }));
+        const box = el('div', { style: 'border-left:3px solid var(--line);padding:2px 0 2px 10px;margin:6px 0' });
+        if (s.thought) box.append(row('pensiero', s.thought, 'var(--muted)'));
+        if (s.action) box.append(row('azione', `${s.action[0]}(${JSON.stringify(s.action[1])})`, 'var(--accent)'));
+        if (s.obs !== undefined) box.append(row('osservazione', s.obs, 'var(--teal)'));
+        if (s.answer) box.append(row('risposta', s.answer, 'var(--amber)'));
+        trace.append(el('div', { class: 'readout', style: 'font-size:11px;color:var(--muted)', text: s.answer ? 'passo finale' : 'passo ' + (i + 1) }), box);
+      });
+    }
+    aIn.addEventListener('keydown', e => { if (e.key === 'Enter') runAgent(); });
+    root.append(lab('Laboratorio · un agente con due tool (ricerca nei documenti e calcolatrice)',
+      el('p', { html: 'Il ciclo è quello di un agente vero: <b>pensiero → azione (chiamata a un tool) → osservazione → …</b> fino a una risposta. La ricerca è il BM25 di sopra; la calcolatrice è un parser aritmetico vero (niente <code>eval</code>). Ma attenzione: il "cervello" che sceglie azioni e argomenti è qui un <b>insieme di regole scritte a mano</b>, non un LLM. In un agente vero è il modello a produrre, per esempio in JSON, il nome del tool e i suoi argomenti (<i>function calling</i>); la struttura del ciclo è identica.' }),
+      controls(select(EX, EX[3][0], v => { aIn.value = v; runAgent(); }, 'esempi')), el('div', { class: 'controls' }, aIn, button('Esegui', runAgent, 'primary')), trace,
+      el('p', { class: 'muted', html: 'Prova una domanda fuori dai documenti: l\'agente si rifiuta invece di inventare. Prova anche "Come sblocco la bici?": la ricerca mette davanti il paragrafo sbagliato (ne parla al secondo posto) e l\'agente risponde male, perché si fida di ciò che trova. Il rifiuto qui è una soglia sul punteggio di ricerca; in un LLM vero dipende dal prompt (per esempio "se i documenti non bastano, dì che non lo sai") e non è mai garantito.' })));
+    runAgent();
+
+    root.append(el('h2', { text: 'Dove si rompono questi sistemi' }));
+    root.append(el('ul', { class: 'prose', html: `
+      <li><b>Retrieval sbagliato</b>: se il passaggio giusto non arriva nel prompt, il modello non può usarlo, e può inventare una risposta plausibile. Il RAG si valuta in due parti: il retrieval (recall@k, come sopra) e la risposta.</li>
+      <li><b>Contesto lungo non è memoria perfetta</b>: più testo si inserisce, più il modello può ignorare dettagli, soprattutto a metà del prompt.</li>
+      <li><b>Prompt injection</b>: un documento recuperato o la risposta di un tool può contenere istruzioni ("ignora le regole precedenti…") che il modello legge come se venissero dall'utente. Nei sistemi con tool ad alto impatto (email, pagamenti, file) il testo non fidato va trattato come <i>dati</i>, con permessi minimi e conferma umana per le azioni irreversibili.</li>
+      <li><b>Errori che si accumulano</b>: ogni passo di un agente può sbagliare, e i passi dipendono dai precedenti. Servono limiti di passi, controlli sull'esito dei tool e log leggibili.</li>
+      <li><b>Costo e latenza</b>: ogni giro del ciclo è una chiamata al modello con tutto il contesto accumulato (qui la KV cache del modulo 9 conta molto).</li>` }));
+
+    root.append(details('math', 'La matematica: TF-IDF, BM25 e coseno', 'formule', `
+      <p><b>IDF.</b> Un termine raro è più informativo di uno comune. Con <var>N</var> documenti e <var>n</var><sub>t</sub> che contengono il termine <var>t</var>: idf(<var>t</var>) = ln(1 + (<var>N</var> − <var>n</var><sub>t</sub> + 0,5)/(<var>n</var><sub>t</sub> + 0,5)) (versione usata da BM25).</p>
+      <p><b>BM25.</b> Per un documento <var>d</var> di lunghezza |<var>d</var>| e una query <var>q</var>:</p>
+      <span class="eq">score(<var>d</var>, <var>q</var>) = Σ<sub><var>t</var>∈<var>q</var></sub> idf(<var>t</var>) · ${frac('<var>f</var><sub>t,d</sub> (<var>k</var><sub>1</sub> + 1)', '<var>f</var><sub>t,d</sub> + <var>k</var><sub>1</sub>(1 − <var>b</var> + <var>b</var> |<var>d</var>|/avgdl)')}</span>
+      <p>La frequenza <var>f</var><sub>t,d</sub> ha rendimenti decrescenti (saturazione controllata da <var>k</var><sub>1</sub>) e i documenti lunghi sono penalizzati (<var>b</var>): una parola ripetuta 10 volte non vale 10 volte una sola.</p>
+      <p><b>TF-IDF + coseno.</b> Ogni testo diventa un vettore sparso con pesi tf·idf; la similarità è il coseno (modulo 2): cos(<var>a</var>, <var>b</var>) = <var>a</var>·<var>b</var> / (‖<var>a</var>‖‖<var>b</var>‖). Il coseno normalizza per la lunghezza del vettore, quindi un testo corto e mirato può battere uno lungo.</p>
+      <p><b>Retrieval denso.</b> Al posto dei conteggi di parole si usa un encoder che mappa testo → vettore di <var>d</var> dimensioni addestrato perché testi correlati abbiano coseno alto. La ricerca è un <i>nearest neighbor</i> su milioni di vettori, per cui si usano indici approssimati.</p>
+      <p><b>Calcolatrice.</b> Il parser è a discesa ricorsiva con la grammatica <i>somma → prodotto (± prodotto)*</i>, <i>prodotto → atomo (× o ÷ atomo)*</i>, <i>atomo → numero | (somma) | −atomo</i>: la precedenza degli operatori sta nella struttura della grammatica.</p>`));
+    root.append(el('h2', { text: 'Verifica rapida' }));
+    root.append(quiz([
+      { q: 'Perché il RAG non richiede di riaddestrare il modello?', opts: ['Perché modifica i pesi in silenzio', 'Perché le informazioni nuove entrano nel contesto (prompt), non nei pesi', 'Perché usa un modello più grande'], ans: 1, why: 'Il modello legge i passaggi recuperati come qualunque altro testo del prompt; aggiornare i documenti basta ad aggiornare le risposte.' },
+      { q: 'Una query e un documento dicono la stessa cosa con parole diverse. Quale approccio ha più probabilità di trovarlo?', opts: ['BM25', 'Retrieval con embedding', 'TF-IDF'], ans: 1, why: 'BM25 e TF-IDF confrontano parole; gli embedding confrontano significati.' },
+      { q: 'Perché una calcolatrice come tool è meglio che far fare il conto al modello?', opts: ['È più economica', 'Il modello genera la risposta un token alla volta e sulle operazioni lunghe sbaglia; un programma è esatto', 'Perché il modello non sa leggere i numeri'], ans: 1, why: 'Un LLM approssima aritmetica con pattern statistici; un tool deterministico dà il risultato corretto, e al modello resta il compito di decidere quando usarlo.' },
+      { q: 'Cosa rende pericolosa la prompt injection in un agente con tool?', opts: ['Rallenta il modello', 'Un testo non fidato può convincere il modello a eseguire azioni con i permessi dell\'agente', 'Aumenta il vocabolario'], ans: 1, why: 'Il modello non distingue in modo affidabile istruzioni e dati: serve limitare i permessi e chiedere conferma per le azioni importanti.' },
+    ]));
+  },
+});
+
+'use strict';
 /* App shell: builds the rail (the model stack as navigation) and shows one module at a time. */
 (function () {
   const rail = $('#rail'), stage = $('#stage'), mods = LAB.modules;
