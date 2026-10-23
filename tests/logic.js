@@ -62,5 +62,22 @@ const last = ic.P[ic.P.length - 1], best = ic.vocab[last.indexOf(Math.max(...las
 ok('induction head predicts "rossi" after a repeated "mario" (copy from context)', best === 'rossi' && Math.max(...last) > 0.95, best + ' ' + Math.max(...last).toFixed(3));
 ok('induction: rows of head-1 and head-2 sum to 1', ic.A1.every(r => close(r.reduce((a, b) => a + b, 0), 1)) && ic.A2.every(r => close(r.reduce((a, b) => a + b, 0), 1)));
 
+
+// --- MLP block pieces
+const T6 = run('LAB.tests');
+['relu', 'gelu', 'silu'].forEach(k => {
+  const a = T6.ACT[k], h = 1e-5; const bad = [-2.3, -0.7, 0.4, 1.9].some(z => Math.abs((a.f(z + h) - a.f(z - h)) / (2 * h) - a.d(z)) > 1e-4);
+  ok(`${k}: analytic derivative matches finite differences`, !bad);
+});
+const fit = run('new LAB.tests.Fit1D(8, "relu", x => Math.sin(2 * x), 3)'); const l0 = fit.loss(); for (let i = 0; i < 1500; i++) fit.step(0.03);
+ok('Fit1D (8 ReLU neurons) learns sin(2x)', fit.loss() < 0.02 && fit.loss() < l0 / 10, l0.toFixed(3) + ' -> ' + fit.loss().toFixed(4));
+const fg = T6.gradFlow(40, 0.5, 12, 16, 1);
+ok('gradient vanishes without residual (s=0.5, 40 layers)', fg.plain[40] < -8, fg.plain[40].toFixed(1));
+ok('gradient survives with residual (s=0.5, 40 layers)', fg.res[40] > -1 && fg.res[40] < 6, fg.res[40].toFixed(1));
+const xs = [2.2, -0.5, 1.4, 3.1, -1.2, 0.4, 2.7, 0.9], y1 = T6.normLayer(xs, 1.5, 0.3, 'layer'), y2 = T6.normLayer(xs.map(v => v * 7), 1.5, 0.3, 'layer');
+const mean = a => a.reduce((p, q) => p + q, 0) / a.length;
+ok('LayerNorm output has mean β and std γ', close(mean(y1), 0.3, 1e-9) && close(Math.sqrt(mean(y1.map(v => (v - 0.3) ** 2))), 1.5, 1e-3));
+ok('LayerNorm is scale-invariant', y1.every((v, i) => close(v, y2[i], 1e-4)));
+
 console.log(bad ? `\n${bad} check(s) failed` : '\nall logic checks passed');
 process.exit(bad ? 1 : 0);
